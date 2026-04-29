@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>English Proficiency Test — Sign In</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Top nav -->
+  <header class="topnav">
+    <div class="brand">English Proficiency Test</div>
+    <div class="meta">Powered by HR Module</div>
+  </header>
+
+  <!-- Centered login card -->
+  <main class="page-narrow">
+    <div class="card">
+      <h1>Welcome, Candidate</h1>
+      <p class="subtitle">Sign in to begin your assessment.</p>
+
+      <form id="loginForm" novalidate>
+        <div class="field">
+          <label for="email">Candidate Email</label>
+          <input type="email" id="email" name="email" placeholder="you@example.com" required>
+        </div>
+
+        <div class="field">
+          <label for="token">Access Token (from HR email)</label>
+          <input type="password" id="token" name="token" class="mono" placeholder="••••••••••••" required>
+        </div>
+
+        <div class="field-error" id="loginError"></div>
+
+        <button type="submit" class="btn btn-primary btn-block">START ASSESSMENT  →</button>
+      </form>
+
+      <p class="text-muted text-center mt-6" style="font-size: 12px;">
+        Didn't receive an email? Contact your HR manager.
+      </p>
+    </div>
+  </main>
+
+  <footer class="footer">© Company HR  •  Privacy  •  Support</footer>
+
+  <script src="js/common.js"></script>
+  <script src="js/login.js"></script>
+</body>
+</html>

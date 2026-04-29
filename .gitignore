@@ -216,3 +216,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Editor and tooling local settings (do not commit)
+.claude/
+.idea/
+.vscode/
+
+# Excel / LibreOffice / Word lock and temp files
+.~lock.*
+~$*
+*.xlsx#
+*.xls#
+
+# OS-generated junk
+.DS_Store
+Thumbs.db
+
+# Local environment files (secrets — never commit)
+.env
+.env.local
+
+# Local SQLite databases (will be relevant on Day 1 of backend)
+*.db
+*.sqlite
+*.sqlite3

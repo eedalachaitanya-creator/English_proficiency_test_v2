@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speaking Section — English Proficiency Test</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="brand">English Proficiency Test  —  Section 2 of 2: Speaking</div>
+    <div class="meta" id="candidateMeta"></div>
+  </header>
+
+  <div class="section-bar">
+    <div>
+      Section 2 / 2
+      <span class="progress-bar"><span class="fill" style="width: 100%;"></span></span>
+    </div>
+    <div class="timer" id="timer">⏱  02:00</div>
+  </div>
+
+  <main class="page">
+
+    <div class="topic-card">
+      <div class="label">Your Impromptu Topic</div>
+      <div class="topic" id="topicText">Loading topic...</div>
+      <div class="hint">Topic randomly selected — speak for 1 to 2 minutes.</div>
+    </div>
+
+    <div class="recorder">
+      <div class="mic" id="micIcon">🎙</div>
+      <div class="waveform" id="waveform"></div>
+      <div class="rec-status idle" id="recStatus">Ready to record</div>
+
+      <div class="rec-controls">
+        <button id="startBtn" class="btn btn-danger">●  START</button>
+        <button id="stopBtn"  class="btn btn-secondary" disabled>■  STOP</button>
+      </div>
+
+      <audio id="playback" controls class="hidden mt-4" style="width: 100%;"></audio>
+    </div>
+
+    <div class="notice mt-6">
+      <strong>Note:</strong>
+      Once you click <em>Finish &amp; Submit</em>, your recording is final.
+      You will <strong>not</strong> see your score — results go directly to HR.
+    </div>
+
+    <div class="flex-row mt-6">
+      <button id="backBtn" class="btn btn-secondary">←  BACK TO READING</button>
+      <span class="spacer"></span>
+      <button id="finishBtn" class="btn btn-success" disabled>FINISH &amp; SUBMIT TEST  →</button>
+    </div>
+  </main>
+
+  <footer class="footer">Mic permission required  •  Do not refresh</footer>
+
+  <script src="js/common.js"></script>
+  <script src="data/content.js"></script>
+  <script src="js/speaking.js"></script>
+</body>
+</html>
