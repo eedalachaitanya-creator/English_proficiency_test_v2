@@ -62,14 +62,24 @@ class SpeakingTopicPublic(BaseModel):
     prompt_text: str
 
 
+class WritingTopicPublic(BaseModel):
+    """Essay prompt assigned to the candidate. Word range is shown to the candidate."""
+    id: int
+    prompt_text: str
+    min_words: int
+    max_words: int
+
+
 class TestContent(BaseModel):
     candidate_name: str
     difficulty: str
     duration_written_seconds: int
+    duration_writing_seconds: int               # essay time limit
     duration_speaking_seconds: int
     passage: PassagePublic                      # the assigned passage
     questions: list[QuestionPublic]             # the 15 questions (RC + grammar + vocab)
-    speaking_topics: list[SpeakingTopicPublic]  # the 3 assigned topics
+    writing_topic: WritingTopicPublic           # the assigned essay prompt
+    speaking_topics: list[SpeakingTopicPublic]  # the 3 assigned speaking topics
 
 
 # ============================================================
@@ -96,6 +106,7 @@ class ScoreSummary(BaseModel):
     difficulty: str
     submitted_at: Optional[datetime]
     reading_score: Optional[int]
+    writing_score: Optional[int]
     speaking_score: Optional[int]
     total_score: Optional[int]
     rating: Optional[str]
@@ -120,6 +131,13 @@ class ScoreDetail(BaseModel):
     reading_score: Optional[int]
     reading_correct: Optional[int]
     reading_total: Optional[int]
+
+    # Writing — essay text + scoring breakdown
+    writing_topic_text: Optional[str] = None
+    essay_text: Optional[str] = None
+    essay_word_count: Optional[int] = None
+    writing_breakdown: Optional[dict] = None
+    writing_score: Optional[int] = None
 
     speaking_breakdown: Optional[dict]
     speaking_score: Optional[int]

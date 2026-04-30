@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic
+from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingResponse, WritingTopic
 from schemas import (
     HRLoginRequest,
     HRLoginResponse,
@@ -157,6 +157,7 @@ def list_results(hr: HRAdmin = Depends(require_hr), db: Session = Depends(get_db
                 difficulty=inv.difficulty,
                 submitted_at=inv.submitted_at,
                 reading_score=s.reading_score if s else None,
+                writing_score=s.writing_score if s else None,
                 speaking_score=s.speaking_score if s else None,
                 total_score=s.total_score if s else None,
                 rating=s.rating if s else None,
@@ -207,6 +208,18 @@ def result_detail(
                 transcript=rec.transcript,
             ))
 
+    # Essay (writing response) — pulled from the relationship for HR review
+    wr: WritingResponse | None = inv.writing_response
+    writing_topic_text = None
+    essay_text = None
+    essay_word_count = None
+    if wr:
+        essay_text = wr.essay_text
+        essay_word_count = wr.word_count
+        topic = db.query(WritingTopic).filter(WritingTopic.id == wr.topic_id).first()
+        if topic:
+            writing_topic_text = topic.prompt_text
+
     return ScoreDetail(
         invitation_id=inv.id,
         candidate_name=inv.candidate_name,
@@ -216,6 +229,11 @@ def result_detail(
         reading_score=s.reading_score if s else None,
         reading_correct=s.reading_correct if s else None,
         reading_total=s.reading_total if s else None,
+        writing_topic_text=writing_topic_text,
+        essay_text=essay_text,
+        essay_word_count=essay_word_count,
+        writing_breakdown=s.writing_breakdown if s else None,
+        writing_score=s.writing_score if s else None,
         speaking_breakdown=s.speaking_breakdown if s else None,
         speaking_score=s.speaking_score if s else None,
         total_score=s.total_score if s else None,

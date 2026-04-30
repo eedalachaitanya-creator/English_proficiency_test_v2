@@ -244,3 +244,8 @@ Thumbs.db
 # Candidate audio recordings — never commit (sensitive data)
 backend/audio_uploads/
 audio_uploads/
+
+# Local-only team docs — kept out of the repo by request
+PROJECT_OVERVIEW.docx
+TEAM_HANDOFF.md
+*.docx

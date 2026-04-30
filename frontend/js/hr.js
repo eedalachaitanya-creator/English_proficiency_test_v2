@@ -67,7 +67,7 @@ function renderKPIs(rows) {
 function renderTable(rows) {
   const tbody = document.getElementById('resultsTbody');
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-muted text-center" style="padding: 24px;">No invitations yet. Click "+ INVITE NEW CANDIDATE" to send the first one.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="text-muted text-center" style="padding: 24px;">No invitations yet. Click "+ INVITE NEW CANDIDATE" to send the first one.</td></tr>`;
     return;
   }
 
@@ -78,6 +78,7 @@ function renderTable(rows) {
       ? new Date(r.submitted_at).toLocaleDateString()
       : '<span class="text-muted">—</span>';
     const reading = r.reading_score != null ? r.reading_score : '—';
+    const writing = r.writing_score != null ? r.writing_score : '—';
     const speaking = r.speaking_score != null ? r.speaking_score : '—';
     const total = r.total_score != null ? `<strong>${r.total_score}</strong>` : '—';
     const ratingBadge = r.rating
@@ -90,6 +91,7 @@ function renderTable(rows) {
       <td>${escapeHtml(r.difficulty)}</td>
       <td>${submitted}</td>
       <td class="text-mono">${reading}</td>
+      <td class="text-mono">${writing}</td>
       <td class="text-mono">${speaking}</td>
       <td>${total}</td>
       <td>${ratingBadge}</td>
@@ -138,6 +140,9 @@ async function showDetail(row) {
   } else {
     document.getElementById('readingDetail').textContent = 'Not yet submitted.';
   }
+
+  // Writing — score breakdown + the candidate's essay text
+  renderWritingDetail(detail);
 
   // Speaking — rubric scores + per-question audio playback.
   // Audio players use HR's session cookie automatically because the <audio>
@@ -270,6 +275,55 @@ function bindEvents() {
   document.getElementById('search').addEventListener('input', applyFilters);
   document.getElementById('statusFilter').addEventListener('change', applyFilters);
 }
+
+// ---- Render the Writing card (essay text + rubric scores) ----
+function renderWritingDetail(detail) {
+  const el = document.getElementById('writingDetail');
+  if (!el) return;
+
+  if (!detail.submitted_at) {
+    el.textContent = 'Not yet submitted.';
+    return;
+  }
+
+  let html = '';
+
+  // Score block (rubric or pending message)
+  if (detail.writing_breakdown) {
+    const lines = Object.entries(detail.writing_breakdown)
+      .map(([k, v]) => `<span class="text-mono">${escapeHtml(k.padEnd(15))} ${v}</span>`)
+      .join('<br>');
+    html += `<div style="margin-bottom: 12px;">
+      ${lines}<br><br>
+      <strong>Score: ${detail.writing_score} / 100</strong>
+    </div>`;
+  } else {
+    html += `<div style="margin-bottom: 12px;"><em>AI grading pending — Task Response, Grammar, Vocabulary, Coherence will be filled in once Claude is wired up.</em></div>`;
+  }
+
+  // Topic
+  if (detail.writing_topic_text) {
+    html += `<div style="margin-top: 16px; padding: 10px 12px; background: var(--bg); border-radius: var(--radius); font-size: 12px; color: var(--text-muted);">
+      <strong>Prompt:</strong> ${escapeHtml(detail.writing_topic_text)}
+    </div>`;
+  }
+
+  // Essay text
+  if (detail.essay_text) {
+    const wordCountLabel = detail.essay_word_count != null ? ` (${detail.essay_word_count} words)` : '';
+    html += `<div style="margin-top: 12px;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+        Candidate's essay${wordCountLabel}
+      </div>
+      <div style="white-space: pre-wrap; padding: 14px; background: var(--white); border: 1px solid var(--border); border-radius: var(--radius); line-height: 1.5; max-height: 320px; overflow-y: auto;">${escapeHtml(detail.essay_text)}</div>
+    </div>`;
+  } else {
+    html += `<div style="margin-top: 12px; color: var(--text-muted); font-style: italic;">No essay text on file.</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
 
 // ---- HTML escaping (defence against bad data) ----
 function escapeHtml(s) {

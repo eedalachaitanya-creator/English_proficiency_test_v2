@@ -17,7 +17,7 @@ import argparse
 import sys
 
 from database import SessionLocal, init_db
-from models import Passage, Question, SpeakingTopic
+from models import Passage, Question, SpeakingTopic, WritingTopic
 
 
 # ============================================================
@@ -477,14 +477,77 @@ EXPERT_TOPICS = [
 
 
 # ============================================================
+# WRITING PROMPTS — essay topics with word ranges
+# ============================================================
+INTERMEDIATE_WRITING = [
+    {
+        "prompt": (
+            "Describe an experience that changed your perspective on something. "
+            "Explain what happened, what you used to think before, and what you think now as a result. "
+            "Use specific details from the experience to support your answer."
+        ),
+        "min_words": 200, "max_words": 300, "category": "personal narrative",
+    },
+    {
+        "prompt": (
+            "Some people prefer to live in big cities, while others prefer small towns or rural areas. "
+            "Compare the two and explain which you would choose. "
+            "Give at least two clear reasons for your preference."
+        ),
+        "min_words": 200, "max_words": 300, "category": "compare and contrast",
+    },
+    {
+        "prompt": (
+            "Write a short email to a colleague who has just been promoted. "
+            "Congratulate them, mention one specific quality you admire in their work, "
+            "and offer to help them transition into the new role. "
+            "Keep the tone professional but warm."
+        ),
+        "min_words": 200, "max_words": 300, "category": "professional communication",
+    },
+]
+
+EXPERT_WRITING = [
+    {
+        "prompt": (
+            "Many companies are encouraging or requiring employees to return to the office "
+            "after years of remote and hybrid work. Argue either for or against this trend. "
+            "Acknowledge at least one strong counterargument and explain why you still hold your position. "
+            "Use concrete examples to support your case."
+        ),
+        "min_words": 300, "max_words": 450, "category": "argumentative",
+    },
+    {
+        "prompt": (
+            "Choose a recent technological advancement (e.g., generative AI, electric vehicles, "
+            "gene editing). Discuss its potential benefits and risks, and explain how individuals, "
+            "companies, and governments should weigh the trade-offs. Avoid one-sided advocacy; "
+            "show that you have considered multiple stakeholders."
+        ),
+        "min_words": 300, "max_words": 450, "category": "analytical",
+    },
+    {
+        "prompt": (
+            "A senior executive in your company has asked for your recommendation on whether to "
+            "invest a limited budget in employee training programs or new equipment. "
+            "Write a concise memo making your case. Address at least one likely objection "
+            "from the executive and explain how you would mitigate it."
+        ),
+        "min_words": 300, "max_words": 450, "category": "professional memo",
+    },
+]
+
+
+# ============================================================
 # SEED LOGIC
 # ============================================================
 def reset_content(db):
     """Wipe all seedable content. Does NOT touch hr_admins or invitations."""
-    print("[reset] Deleting existing passages, questions, and topics...")
+    print("[reset] Deleting existing passages, questions, speaking + writing topics...")
     db.query(Question).delete()
     db.query(Passage).delete()
     db.query(SpeakingTopic).delete()
+    db.query(WritingTopic).delete()
     db.commit()
 
 
@@ -492,7 +555,12 @@ def seed(db, args):
     init_db()
 
     # Pre-flight: refuse if content already exists and --reset not given
-    existing = db.query(Passage).count() + db.query(Question).count() + db.query(SpeakingTopic).count()
+    existing = (
+        db.query(Passage).count()
+        + db.query(Question).count()
+        + db.query(SpeakingTopic).count()
+        + db.query(WritingTopic).count()
+    )
     if existing > 0 and not args.reset:
         print(
             f"Refusing to seed: {existing} content rows already exist.\n"
@@ -548,6 +616,17 @@ def seed(db, args):
                 category=t["category"],
             ))
 
+    # ------ WRITING TOPICS ------
+    for level, prompts in [("intermediate", INTERMEDIATE_WRITING), ("expert", EXPERT_WRITING)]:
+        for w in prompts:
+            db.add(WritingTopic(
+                prompt_text=w["prompt"],
+                difficulty=level,
+                min_words=w["min_words"],
+                max_words=w["max_words"],
+                category=w["category"],
+            ))
+
     db.commit()
 
     # Report
@@ -556,6 +635,7 @@ def seed(db, args):
         "rc_questions": db.query(Question).filter(Question.question_type == "reading_comp").count(),
         "standalone_questions": db.query(Question).filter(Question.passage_id.is_(None)).count(),
         "speaking_topics": db.query(SpeakingTopic).count(),
+        "writing_topics": db.query(WritingTopic).count(),
     }
     print("Seed complete:")
     for k, v in counts.items():

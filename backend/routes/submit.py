@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, File, Form, Uplo
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Invitation, MCQAnswer, AudioRecording
+from models import Invitation, MCQAnswer, AudioRecording, WritingResponse, WritingTopic
 from schemas import SubmitResponse
 from scoring import score_invitation
 
@@ -39,11 +39,20 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+HARD_FLOOR_WORDS = 50  # essays shorter than this are rejected as not-meaningful
+
+
+def _word_count(text: str) -> int:
+    """Crude but consistent word counter — splits on whitespace, ignores empties."""
+    return len([w for w in text.strip().split() if w])
+
+
 @router.post("/api/submit", response_model=SubmitResponse)
 async def submit_test(
     request: Request,
     answers: str = Form(...),
     topic_ids: str = Form("[]"),
+    essay_text: str = Form(""),         # the candidate's written essay
     audio_0: UploadFile | None = File(None),
     audio_1: UploadFile | None = File(None),
     audio_2: UploadFile | None = File(None),
@@ -94,6 +103,33 @@ async def submit_test(
             invitation_id=inv.id,
             question_id=qid,
             selected_option=sel,
+        ))
+
+    # ---- 3b. Save the writing essay ----
+    # The candidate's frontend enforces the soft word range, but the server is the
+    # security boundary — a non-browser client (curl/Postman) could bypass the UI.
+    # If a writing topic was assigned, an essay is REQUIRED at submit time.
+    essay_clean = (essay_text or "").strip()
+    word_count = _word_count(essay_clean)
+    if inv.assigned_writing_topic_id:
+        if word_count < HARD_FLOOR_WORDS:
+            raise HTTPException(
+                422,
+                f"Essay too short ({word_count} words). Minimum {HARD_FLOOR_WORDS} words required.",
+            )
+        topic = db.query(WritingTopic).filter(WritingTopic.id == inv.assigned_writing_topic_id).first()
+        # Hard ceiling: 2x the topic's max — prevents pasting books
+        if topic and word_count > topic.max_words * 2:
+            raise HTTPException(
+                422,
+                f"Essay too long ({word_count} words). Hard limit is {topic.max_words * 2}.",
+            )
+
+        db.add(WritingResponse(
+            invitation_id=inv.id,
+            topic_id=inv.assigned_writing_topic_id,
+            essay_text=essay_clean,
+            word_count=word_count,
         ))
 
     # ---- 4. Save audio files to disk + insert AudioRecording rows ----

@@ -197,6 +197,8 @@
       const fd = new FormData();
       fd.append('answers', JSON.stringify(Store.get('readingAnswers', {})));
       fd.append('topic_ids', JSON.stringify(recordings.map(r => r.topic_id)));
+      // Writing essay — saved during the writing section
+      fd.append('essay_text', Store.get('writingEssay', '') || '');
       recordings.forEach((r, i) => {
         fd.append(`audio_${i}`, r.blob, `q${i}.webm`);
       });
@@ -216,12 +218,12 @@
 
   document.getElementById('backBtn').addEventListener('click', async () => {
     const ok = await Modal.confirm(
-      'Going back to Reading will discard any recordings you made. Continue?',
+      'Going back to Writing will discard any recordings you made on this section. Continue?',
       { okText: 'Discard & Go Back', cancelText: 'Stay Here', dangerous: true }
     );
     if (!ok) return;
     stopRecording();
-    window.location.href = 'reading.html';
+    window.location.href = 'writing.html';
   });
 
   window.addEventListener('beforeunload', e => {
