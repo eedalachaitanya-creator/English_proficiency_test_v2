@@ -42,20 +42,24 @@
 
   <script src="js/common.js"></script>
   <script>
-    const candidate = Store.get('candidate');
-    const refId     = Store.get('refId');
+    // Read the cached test content (set during the test) for the candidate's name.
+    // We don't bounce to index.html on missing — that page is the HR login now.
+    const content = Store.get('testContent');
+    const refId   = Store.get('refId');
 
-    if (!candidate || !refId) {
-      // Someone landed here directly — bounce them to login
-      window.location.href = 'index.html';
-    } else {
+    if (content && content.candidate_name) {
       document.getElementById('thankMsg').textContent =
-        `Thank you, ${candidate.name}. Your responses have been recorded and your audio uploaded.`;
-      document.getElementById('refIdDisplay').textContent = refId;
-
-      // The exam is over — clear sensitive state but keep the ref ID visible.
-      // (We do not clear sessionStorage entirely because the user is still on this page.)
+        `Thank you, ${content.candidate_name}. Your responses have been recorded and your audio uploaded.`;
     }
+    if (refId) {
+      document.getElementById('refIdDisplay').textContent = refId;
+    }
+
+    // Test is over — clear cached content so a refresh doesn't try to fetch it.
+    Store.remove('testContent');
+    Store.remove('readingAnswers');
+    Store.remove('readingDeadline');
+    Store.remove('readingTimeUp');
   </script>
 </body>
 </html>

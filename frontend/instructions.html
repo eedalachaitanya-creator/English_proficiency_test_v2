@@ -10,32 +10,32 @@
 
   <header class="topnav">
     <div class="brand">English Proficiency Test</div>
-    <div class="meta" id="candidateMeta"></div>
+    <div class="meta" id="candidateMeta">Loading…</div>
   </header>
 
   <main class="page">
-    <h1>Test Instructions</h1>
-    <p class="subtitle">Read carefully before you begin. The test has 2 sections and is auto-timed.</p>
+    <h1 id="welcomeTitle">Test Instructions</h1>
+    <p class="subtitle" id="subtitleText">Read carefully before you begin. The test has 2 sections and is auto-timed.</p>
 
     <div class="reading-grid">
 
       <div class="card">
-        <div class="card-header">SECTION 1  •  READING</div>
-        <h3 style="color: var(--orange);">Duration: 25 minutes</h3>
+        <div class="card-header">SECTION 1  •  WRITTEN</div>
+        <h3 style="color: var(--orange);"><span id="writtenMins">30</span> minutes</h3>
         <ul style="margin-top: 12px; padding-left: 20px; line-height: 1.8;">
-          <li>You will read 1 academic passage (~600 words).</li>
-          <li>8 multiple-choice questions follow the passage.</li>
-          <li>You may scroll back to the passage at any time.</li>
+          <li>15 multiple-choice questions covering grammar, reading comprehension, and vocabulary.</li>
+          <li>One reading passage on the left; questions about it on the right.</li>
+          <li>Other questions stand alone (grammar, fill-in-blank, synonyms).</li>
           <li>The timer is visible at the top-right of the screen.</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">SECTION 2  •  SPEAKING</div>
-        <h3 style="color: var(--orange);">Duration: up to 2 minutes</h3>
+        <h3 style="color: var(--orange);">up to <span id="speakingMins">10</span> minutes</h3>
         <ul style="margin-top: 12px; padding-left: 20px; line-height: 1.8;">
-          <li>1 random impromptu topic will be shown.</li>
-          <li>30-second prep, then 1-2 minute recording.</li>
+          <li>3 impromptu speaking prompts.</li>
+          <li>Speak for ~60–90 seconds per topic.</li>
           <li>Speak clearly into your microphone.</li>
           <li>You cannot re-record once submitted.</li>
         </ul>
@@ -62,20 +62,26 @@
 
   <script src="js/common.js"></script>
   <script>
-    // Guard: must be logged in
-    const candidate = requireCandidate();
-    if (candidate) {
-      document.getElementById('candidateMeta').textContent =
-        `${candidate.name}  |  ${candidate.email}`;
-    }
+    (async function () {
+      const content = await loadTestContent();
+      if (!content) return;
 
-    // Mic test — asks for permission and confirms it works
+      document.getElementById('candidateMeta').textContent =
+        `${content.candidate_name}  |  ${content.difficulty}`;
+      document.getElementById('welcomeTitle').textContent =
+        `Welcome, ${content.candidate_name}`;
+      document.getElementById('writtenMins').textContent =
+        Math.round(content.duration_written_seconds / 60);
+      document.getElementById('speakingMins').textContent =
+        Math.round(content.duration_speaking_seconds / 60);
+    })();
+
     document.getElementById('micTestBtn').addEventListener('click', async () => {
       const status = document.getElementById('micStatus');
       status.textContent = 'Requesting permission...';
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop()); // release immediately
+        stream.getTracks().forEach(t => t.stop());
         status.textContent = '✓ Microphone working';
         status.style.color = 'var(--green)';
       } catch (err) {
@@ -84,7 +90,6 @@
       }
     });
 
-    // Begin test
     document.getElementById('beginBtn').addEventListener('click', () => {
       window.location.href = 'reading.html';
     });

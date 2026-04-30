@@ -1,72 +1,71 @@
 /* =========================================================================
-   reading.js — renders the passage + MCQs, runs the countdown timer,
-   stores answers in sessionStorage, auto-advances when time expires.
+   reading.js — fetches the assigned passage + questions from the backend,
+   renders them, runs the countdown timer, persists answers in sessionStorage.
    ========================================================================= */
 
-(function () {
-  const candidate = requireCandidate();
-  if (!candidate) return;
+(async function () {
+  const content = await loadTestContent();
+  if (!content) return;
 
   document.getElementById('candidateMeta').textContent =
-    `${candidate.name}  |  ${candidate.email}`;
-
-  const { reading } = window.TEST_CONTENT;
+    `${content.candidate_name}  |  ${content.difficulty}`;
 
   // ---- Render passage ----
   const passageEl = document.getElementById('passage');
-  passageEl.innerHTML = `<h2>${reading.passage.title}</h2>` +
-    reading.passage.paragraphs.map(p => `<p>${p}</p>`).join('');
+  passageEl.innerHTML =
+    `<h2>${escapeHtml(content.passage.title)}</h2>` +
+    content.passage.body
+      .split(/\n\s*\n/)
+      .map(p => `<p>${escapeHtml(p)}</p>`)
+      .join('');
 
   // ---- Render questions ----
   const formEl = document.getElementById('questionsForm');
   const answers = Store.get('readingAnswers', {});
 
-  reading.questions.forEach((q, qi) => {
+  content.questions.forEach((q, qi) => {
     const block = document.createElement('div');
     block.className = 'question';
+    const typeLabel = labelForType(q.question_type);
     block.innerHTML = `
-      <div class="question-stem">${qi + 1}. ${q.stem}</div>
+      <div class="question-stem">
+        <span style="font-size: 11px; color: var(--text-muted); font-weight: normal; text-transform: uppercase; letter-spacing: 0.5px;">${typeLabel}</span><br>
+        ${qi + 1}. ${escapeHtml(q.stem)}
+      </div>
       ${q.options.map((opt, oi) => `
         <label class="option ${answers[q.id] === oi ? 'selected' : ''}" data-q="${q.id}" data-o="${oi}">
-          <input type="radio" name="${q.id}" value="${oi}" ${answers[q.id] === oi ? 'checked' : ''}>
-          <span><strong>${String.fromCharCode(65 + oi)}.</strong> ${opt}</span>
+          <input type="radio" name="q_${q.id}" value="${oi}" ${answers[q.id] === oi ? 'checked' : ''}>
+          <span><strong>${String.fromCharCode(65 + oi)}.</strong> ${escapeHtml(opt)}</span>
         </label>
       `).join('')}
     `;
     formEl.appendChild(block);
   });
 
-  // ---- Persist answers as the user clicks ----
   function updateAnsweredCount() {
     const stored = Store.get('readingAnswers', {});
     const n = Object.keys(stored).length;
-    const total = reading.questions.length;
+    const total = content.questions.length;
     const pct = total === 0 ? 0 : Math.round((n / total) * 100);
 
-    // Bottom-of-page text counter (existing)
-    document.getElementById('answeredCount').textContent =
-      `${n} of ${total} answered`;
-
-    // NEW: per-question progress bar inside the questions card
+    document.getElementById('answeredCount').textContent = `${n} of ${total} answered`;
     document.getElementById('qProgressFill').style.width = pct + '%';
     document.getElementById('qProgressLabel').textContent = `${n} / ${total}`;
   }
 
   formEl.addEventListener('change', e => {
     if (e.target.matches('input[type="radio"]')) {
-      const qId = e.target.name;
+      const qId = parseInt(e.target.name.replace('q_', ''), 10);
       const oIdx = parseInt(e.target.value, 10);
       const stored = Store.get('readingAnswers', {});
       stored[qId] = oIdx;
       Store.set('readingAnswers', stored);
 
-      // visual: highlight selected option, un-highlight siblings
       const labels = formEl.querySelectorAll(`label[data-q="${qId}"]`);
       labels.forEach(l => l.classList.toggle(
         'selected',
         parseInt(l.dataset.o, 10) === oIdx
       ));
-
       updateAnsweredCount();
     }
   });
@@ -74,42 +73,72 @@
   updateAnsweredCount();
 
   // ---- Timer ----
+  // Persist the deadline (absolute timestamp) so navigating Back to instructions
+  // and re-entering reading.html does NOT reset the clock — matching the
+  // back-button warning's "will not stop the timer" promise.
   const timerEl = document.getElementById('timer');
-  const ticker = startCountdown(reading.durationSeconds,
+  let deadline = Store.get('readingDeadline');
+  if (typeof deadline !== 'number') {
+    deadline = Date.now() + content.duration_written_seconds * 1000;
+    Store.set('readingDeadline', deadline);
+  }
+  const initialRemaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+  if (initialRemaining === 0) {
+    Store.set('readingTimeUp', true);
+    window.location.href = 'speaking.html';
+    return;
+  }
+  const ticker = startCountdown(initialRemaining,
     (rem) => {
       timerEl.textContent = `⏱  ${formatTime(rem)}`;
       timerEl.classList.toggle('warning', rem <= 60 && rem > 15);
       timerEl.classList.toggle('danger',  rem <= 15);
     },
     () => {
-      // Time's up — store whatever we have and move on
       Store.set('readingTimeUp', true);
       window.location.href = 'speaking.html';
     }
   );
 
-  // ---- Buttons ----
-  document.getElementById('backBtn').addEventListener('click', () => {
-    if (confirm('Going back will not stop the timer. Continue?')) {
-      window.location.href = 'instructions.html';
-    }
+  document.getElementById('backBtn').addEventListener('click', async () => {
+    const ok = await Modal.confirm(
+      'Going back will not stop the timer. The countdown keeps running.',
+      { okText: 'Go Back', cancelText: 'Stay' }
+    );
+    if (ok) window.location.href = 'instructions.html';
   });
 
-  document.getElementById('nextBtn').addEventListener('click', () => {
+  document.getElementById('nextBtn').addEventListener('click', async () => {
     const stored = Store.get('readingAnswers', {});
-    const unanswered = reading.questions.filter(q => stored[q.id] === undefined);
+    const unanswered = content.questions.filter(q => stored[q.id] === undefined);
     if (unanswered.length > 0) {
-      if (!confirm(`You have ${unanswered.length} unanswered question(s). Continue to Speaking section?`)) {
-        return;
-      }
+      const ok = await Modal.confirm(
+        `You have ${unanswered.length} unanswered question${unanswered.length === 1 ? '' : 's'}. Continue to the Speaking section?`,
+        { okText: 'Continue', cancelText: 'Keep Answering', dangerous: true }
+      );
+      if (!ok) return;
     }
     ticker.stop();
     window.location.href = 'speaking.html';
   });
 
-  // Warn before unload (refresh/close)
   window.addEventListener('beforeunload', e => {
     e.preventDefault();
     e.returnValue = '';
   });
+
+  // ---- helpers ----
+  function labelForType(t) {
+    return ({
+      reading_comp: 'Reading Comprehension',
+      grammar: 'Grammar',
+      vocabulary: 'Vocabulary',
+      fill_blank: 'Fill in the Blank',
+    })[t] || t;
+  }
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
 })();

@@ -1,0 +1,26 @@
+# Web framework + server
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# Database
+sqlalchemy>=2.0
+psycopg2-binary>=2.9       # for PostgreSQL on Render (Day 3 deploy)
+
+# Validation & settings
+pydantic>=2.5
+pydantic-settings>=2.1
+python-dotenv>=1.0
+
+# Auth
+bcrypt>=4.1
+itsdangerous>=2.1          # signed session cookies (used by SessionMiddleware)
+
+# Multipart / form uploads (audio files on Day 2)
+python-multipart>=0.0.7
+
+# AI providers (Day 2 — installed now to lock versions)
+anthropic>=0.39
+openai>=1.40
+
+# Email (Day 3)
+aiosmtplib>=3.0

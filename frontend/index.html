@@ -3,41 +3,39 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>English Proficiency Test — Sign In</title>
+  <title>HR Portal — Sign In</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-  <!-- Top nav -->
   <header class="topnav">
-    <div class="brand">English Proficiency Test</div>
-    <div class="meta">Powered by HR Module</div>
+    <div class="brand">English Proficiency Test  —  HR Portal</div>
+    <div class="meta">Internal use only</div>
   </header>
 
-  <!-- Centered login card -->
   <main class="page-narrow">
     <div class="card">
-      <h1>Welcome, Candidate</h1>
-      <p class="subtitle">Sign in to begin your assessment.</p>
+      <h1>HR Sign In</h1>
+      <p class="subtitle">Log in to invite candidates and view results.</p>
 
       <form id="loginForm" novalidate>
         <div class="field">
-          <label for="email">Candidate Email</label>
-          <input type="email" id="email" name="email" placeholder="you@example.com" required>
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" placeholder="you@company.com" required autofocus>
         </div>
 
         <div class="field">
-          <label for="token">Access Token (from HR email)</label>
-          <input type="password" id="token" name="token" class="mono" placeholder="••••••••••••" required>
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" placeholder="••••••••" required>
         </div>
 
         <div class="field-error" id="loginError"></div>
 
-        <button type="submit" class="btn btn-primary btn-block">START ASSESSMENT  →</button>
+        <button type="submit" class="btn btn-primary btn-block">SIGN IN  →</button>
       </form>
 
       <p class="text-muted text-center mt-6" style="font-size: 12px;">
-        Didn't receive an email? Contact your HR manager.
+        New HR account? Ask an admin to create one via the CLI script.
       </p>
     </div>
   </main>

@@ -457,6 +457,41 @@ table.results tbody tr:last-child td { border-bottom: none; }
 }
 .notice strong { color: var(--navy); }
 
+/* ---------- Modal (shared — used by Modal.confirm() and HR invite modal) ---------- */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(11, 37, 69, 0.45);
+  display: none;
+  align-items: center; justify-content: center;
+  z-index: 1000;
+  animation: fade-in 0.15s ease-out;
+}
+.modal-backdrop.show { display: flex; }
+.modal {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 100%; max-width: 480px;
+  box-shadow: var(--shadow-md);
+  animation: scale-in 0.15s ease-out;
+}
+.modal h2 { margin-bottom: 6px; }
+.modal-message {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--navy);
+  margin-bottom: 20px;
+  white-space: pre-wrap;   /* preserve \n in messages — used by submission-failure alert */
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scale-in {
+  from { transform: scale(0.96); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
 /* ---------- Footer ---------- */
 .footer {
   background: var(--navy-light);

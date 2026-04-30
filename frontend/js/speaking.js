@@ -1,37 +1,28 @@
 /* =========================================================================
-   speaking.js — picks a random topic, records audio with MediaRecorder,
-   shows a live waveform, runs the 2-minute cap timer, stores the recording
-   blob (as base64) in sessionStorage so submitted.html can show ref ID.
+   speaking.js — fetches the assigned 3 topics, walks the candidate through
+   them one at a time, captures audio per topic, stores blobs in memory
+   until final submit (Day 2).
    ========================================================================= */
 
-(function () {
-  const candidate = requireCandidate();
-  if (!candidate) return;
+(async function () {
+  const content = await loadTestContent();
+  if (!content) return;
 
   document.getElementById('candidateMeta').textContent =
-    `${candidate.name}  |  ${candidate.email}`;
+    `${content.candidate_name}  |  ${content.difficulty}`;
 
-  const { speaking } = window.TEST_CONTENT;
-
-  // ---- Pick a topic (deterministic per candidate so refresh shows same one) ----
-  let topicIndex = Store.get('topicIndex', null);
-  if (topicIndex === null) {
-    topicIndex = Math.floor(Math.random() * speaking.topics.length);
-    Store.set('topicIndex', topicIndex);
+  const topics = content.speaking_topics;
+  if (!topics || topics.length === 0) {
+    await Modal.alert('No speaking topics were assigned. Please contact your HR manager.', { title: 'Setup error' });
+    return;
   }
-  const topic = speaking.topics[topicIndex];
-  document.getElementById('topicText').textContent = `"${topic}"`;
-  Store.set('speakingTopic', topic);
 
-  // ---- Build static waveform bars (animated when recording) ----
-  const waveformEl = document.getElementById('waveform');
-  const BAR_COUNT = 40;
-  for (let i = 0; i < BAR_COUNT; i++) {
-    waveformEl.appendChild(document.createElement('span'));
-  }
-  const bars = waveformEl.querySelectorAll('span');
+  // Per-topic max time (total budget / number of topics)
+  const PER_TOPIC_SECONDS = Math.floor(content.duration_speaking_seconds / topics.length);
 
-  // ---- Recorder state ----
+  // ---- Recording state ----
+  const recordings = [];           // [{topic_id, blob, mime}]
+  let currentTopicIdx = 0;
   let mediaRecorder = null;
   let audioStream = null;
   let audioContext = null;
@@ -40,18 +31,34 @@
   let chunks = [];
   let recTimer = null;
 
-  const startBtn   = document.getElementById('startBtn');
-  const stopBtn    = document.getElementById('stopBtn');
-  const finishBtn  = document.getElementById('finishBtn');
-  const recStatus  = document.getElementById('recStatus');
-  const micIcon    = document.getElementById('micIcon');
-  const playback   = document.getElementById('playback');
-  const timerEl    = document.getElementById('timer');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const finishBtn = document.getElementById('finishBtn');
+  const recStatus = document.getElementById('recStatus');
+  const micIcon = document.getElementById('micIcon');
+  const playback = document.getElementById('playback');
+  const timerEl = document.getElementById('timer');
+  const topicTextEl = document.getElementById('topicText');
 
-  // Initial timer display (no countdown until recording starts)
-  timerEl.textContent = `⏱  ${formatTime(speaking.durationSeconds)}`;
+  const waveformEl = document.getElementById('waveform');
+  const BAR_COUNT = 40;
+  for (let i = 0; i < BAR_COUNT; i++) waveformEl.appendChild(document.createElement('span'));
+  const bars = waveformEl.querySelectorAll('span');
 
-  // ---- Live waveform animation using AnalyserNode ----
+  function showCurrentTopic() {
+    const t = topics[currentTopicIdx];
+    topicTextEl.textContent = `Question ${currentTopicIdx + 1} of ${topics.length}: ${t.prompt_text}`;
+    timerEl.textContent = `⏱  ${formatTime(PER_TOPIC_SECONDS)}`;
+    recStatus.textContent = 'Ready to record';
+    recStatus.classList.add('idle');
+    recStatus.style.color = '';
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    playback.classList.add('hidden');
+  }
+
+  showCurrentTopic();
+
   function animateWaveform() {
     const data = new Uint8Array(analyser.frequencyBinCount);
     const draw = () => {
@@ -66,18 +73,16 @@
     draw();
   }
 
-  // ---- Start recording ----
   startBtn.addEventListener('click', async () => {
     try {
       audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      recStatus.textContent = '✗ Microphone permission denied or unavailable';
+    } catch {
+      recStatus.textContent = '✗ Microphone permission denied';
       recStatus.classList.remove('idle');
       recStatus.style.color = 'var(--red)';
       return;
     }
 
-    // AudioContext for live waveform
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const source = audioContext.createMediaStreamSource(audioStream);
     analyser = audioContext.createAnalyser();
@@ -86,99 +91,139 @@
     waveformEl.classList.add('active');
     animateWaveform();
 
-    // MediaRecorder for actual capture
     chunks = [];
     mediaRecorder = new MediaRecorder(audioStream);
-    mediaRecorder.ondataavailable = e => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
     mediaRecorder.onstop = handleStopped;
     mediaRecorder.start();
 
     micIcon.classList.add('recording');
     recStatus.classList.remove('idle');
-    recStatus.textContent = `RECORDING  •  00:00 / ${formatTime(speaking.durationSeconds)}`;
+    recStatus.style.color = 'var(--red)';
+    recStatus.textContent = `RECORDING  •  00:00 / ${formatTime(PER_TOPIC_SECONDS)}`;
     startBtn.disabled = true;
     stopBtn.disabled = false;
 
-    // Countdown that also auto-stops at 0
-    recTimer = startCountdown(speaking.durationSeconds,
+    recTimer = startCountdown(PER_TOPIC_SECONDS,
       (rem) => {
-        const elapsed = speaking.durationSeconds - rem;
+        const elapsed = PER_TOPIC_SECONDS - rem;
         timerEl.textContent = `⏱  ${formatTime(rem)}`;
         recStatus.textContent =
-          `RECORDING  •  ${formatTime(elapsed)} / ${formatTime(speaking.durationSeconds)}`;
+          `RECORDING  •  ${formatTime(elapsed)} / ${formatTime(PER_TOPIC_SECONDS)}`;
         timerEl.classList.toggle('warning', rem <= 30 && rem > 10);
         timerEl.classList.toggle('danger',  rem <= 10);
       },
-      () => stopRecording()
+      stopRecording
     );
   });
 
-  // ---- Stop recording (button or auto on timer expiry) ----
   function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
+    // Idempotent: callable from the Stop button, the timer's onExpire, AND the
+    // Back button. Null out each resource once cleaned up so a second call
+    // doesn't re-close an already-closed AudioContext (which rejects).
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    if (recTimer) { recTimer.stop(); recTimer = null; }
+    if (audioStream) {
+      audioStream.getTracks().forEach(t => t.stop());
+      audioStream = null;
     }
-    if (recTimer) recTimer.stop();
-    if (audioStream) audioStream.getTracks().forEach(t => t.stop());
-    if (audioContext) audioContext.close();
-    if (waveformAnimId) cancelAnimationFrame(waveformAnimId);
+    if (audioContext) {
+      audioContext.close().catch(() => {});
+      audioContext = null;
+    }
+    if (waveformAnimId) {
+      cancelAnimationFrame(waveformAnimId);
+      waveformAnimId = null;
+    }
     waveformEl.classList.remove('active');
     bars.forEach(b => b.style.height = '8px');
     micIcon.classList.remove('recording');
     startBtn.disabled = true;
     stopBtn.disabled = true;
   }
-
   stopBtn.addEventListener('click', stopRecording);
 
-  // ---- After MediaRecorder finalises the blob ----
   function handleStopped() {
     const blob = new Blob(chunks, { type: 'audio/webm' });
+    recordings.push({
+      topic_id: topics[currentTopicIdx].id,
+      blob,
+      mime: blob.type,
+    });
     const url = URL.createObjectURL(blob);
     playback.src = url;
     playback.classList.remove('hidden');
-    recStatus.textContent = `Recording complete  •  ${(blob.size / 1024).toFixed(1)} KB`;
+    recStatus.textContent = `Recorded for question ${currentTopicIdx + 1} (${(blob.size/1024).toFixed(1)} KB)`;
     recStatus.style.color = 'var(--green)';
-    finishBtn.disabled = false;
 
-    // Save blob as base64 in sessionStorage so submitted.html can confirm.
-    // (The real backend will receive the blob via FormData; this is a placeholder.)
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      Store.set('speakingAudio', {
-        dataUrl: reader.result,
-        sizeBytes: blob.size,
-        mimeType: blob.type,
+    // Move to next topic, or enable submit if last
+    if (currentTopicIdx < topics.length - 1) {
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'btn btn-primary mt-4';
+      nextBtn.textContent = `NEXT QUESTION (${currentTopicIdx + 2} of ${topics.length})  →`;
+      nextBtn.addEventListener('click', () => {
+        nextBtn.remove();
+        currentTopicIdx += 1;
+        showCurrentTopic();
       });
-    };
-    reader.readAsDataURL(blob);
+      document.querySelector('.recorder').appendChild(nextBtn);
+    } else {
+      finishBtn.disabled = false;
+    }
   }
 
-  // ---- Submit final test ----
-  finishBtn.addEventListener('click', () => {
-    if (!confirm('Submit your test? You cannot re-record.')) return;
+  finishBtn.addEventListener('click', async () => {
+    if (recordings.length < topics.length) {
+      const ok = await Modal.confirm(
+        `You only recorded ${recordings.length} of ${topics.length} questions. Submit anyway?`,
+        { okText: 'Submit Anyway', cancelText: 'Keep Recording', dangerous: true }
+      );
+      if (!ok) return;
+    }
+    const ok = await Modal.confirm(
+      'Once you submit, your test is final. You cannot re-record.',
+      { okText: 'Submit Test', cancelText: 'Wait', dangerous: true, title: 'Confirm submission' }
+    );
+    if (!ok) return;
 
-    // ---- BACKEND HOOK ----
-    // Real flow: build a FormData with answers + audio blob, POST to /api/submit.
-    // For now we just generate a reference ID and move on.
-    const refId = generateRefId(candidate.name);
-    Store.set('refId', refId);
-    Store.set('submittedAt', new Date().toISOString());
+    finishBtn.disabled = true;
+    finishBtn.textContent = 'Submitting…';
 
-    window.location.href = 'submitted.html';
-  });
+    // ---- Real submission ----
+    // Build a multipart form: MCQ answers as JSON, the speaking topic IDs we recorded
+    // for, plus one audio blob per question. The server validates everything and stores
+    // it; we never trust the client to score itself.
+    try {
+      const fd = new FormData();
+      fd.append('answers', JSON.stringify(Store.get('readingAnswers', {})));
+      fd.append('topic_ids', JSON.stringify(recordings.map(r => r.topic_id)));
+      recordings.forEach((r, i) => {
+        fd.append(`audio_${i}`, r.blob, `q${i}.webm`);
+      });
 
-  // ---- Back ----
-  document.getElementById('backBtn').addEventListener('click', () => {
-    if (confirm('Going back will discard your recording (if any). Continue?')) {
-      stopRecording();
-      window.location.href = 'reading.html';
+      const res = await api('/api/submit', { method: 'POST', body: fd });
+      Store.set('refId', res.ref_id);
+      window.location.href = 'submitted.html';
+    } catch (err) {
+      finishBtn.disabled = false;
+      finishBtn.textContent = 'FINISH & SUBMIT TEST  →';
+      await Modal.alert(
+        `Could not submit your test: ${err.message}\n\nPlease check your connection and try again.`,
+        { title: 'Submission failed' }
+      );
     }
   });
 
-  // Refresh warning
+  document.getElementById('backBtn').addEventListener('click', async () => {
+    const ok = await Modal.confirm(
+      'Going back to Reading will discard any recordings you made. Continue?',
+      { okText: 'Discard & Go Back', cancelText: 'Stay Here', dangerous: true }
+    );
+    if (!ok) return;
+    stopRecording();
+    window.location.href = 'reading.html';
+  });
+
   window.addEventListener('beforeunload', e => {
     e.preventDefault();
     e.returnValue = '';

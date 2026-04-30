@@ -1,39 +1,42 @@
 /* =========================================================================
-   login.js — handles the login form.
-   For now there is no real backend, so we accept any non-empty token of
-   length >= 6. When the backend is built, swap the validation block
-   for a fetch() call to /api/login.
+   login.js — HR sign-in form submission.
+   On success, server sets a session cookie and we redirect to the dashboard.
    ========================================================================= */
 
-document.getElementById('loginForm').addEventListener('submit', function (e) {
+// If already logged in, skip straight to the dashboard.
+api('/api/hr/me').then(() => {
+  window.location.href = 'hr-dashboard.html';
+}).catch(() => {
+  // 401 means not logged in — stay on this page.
+});
+
+document.getElementById('loginForm').addEventListener('submit', async function (e) {
   e.preventDefault();
 
   const email = document.getElementById('email').value.trim();
-  const token = document.getElementById('token').value.trim();
+  const password = document.getElementById('password').value;
   const errorEl = document.getElementById('loginError');
   errorEl.textContent = '';
 
-  // Basic validation (front-end only)
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  if (!emailValid) {
-    errorEl.textContent = 'Please enter a valid email address.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    errorEl.textContent = 'Enter a valid email address.';
     return;
   }
-  if (token.length < 6) {
-    errorEl.textContent = 'Access token must be at least 6 characters.';
+  if (!password) {
+    errorEl.textContent = 'Password is required.';
     return;
   }
 
-  // ---- BACKEND HOOK ----
-  // Replace this block with: fetch('/api/login', { method:'POST', body: JSON.stringify({email, token}) })
-  // For now we just accept the token and move on.
-  const candidate = {
-    email,
-    token,
-    name: email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-    startedAt: new Date().toISOString(),
-  };
-  Store.set('candidate', candidate);
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Signing in…';
 
-  window.location.href = 'instructions.html';
+  try {
+    await api('/api/hr/login', { method: 'POST', body: { email, password } });
+    window.location.href = 'hr-dashboard.html';
+  } catch (err) {
+    errorEl.textContent = err.message || 'Login failed.';
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'SIGN IN  →';
+  }
 });

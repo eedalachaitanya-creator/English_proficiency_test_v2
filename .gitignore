@@ -240,3 +240,7 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+# Candidate audio recordings — never commit (sensitive data)
+backend/audio_uploads/
+audio_uploads/
