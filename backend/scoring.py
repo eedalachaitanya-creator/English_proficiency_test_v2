@@ -4,19 +4,21 @@ Scoring module.
 Reading scoring is deterministic (count correct ÷ total) — runs immediately
 on submission, no API calls, free.
 
-Speaking scoring is stubbed for now. The next batch will replace
-`score_speaking()` with real Whisper transcription + Claude rubric scoring
-once the API keys are funded.
+Speaking scoring delegates to speaking_eval.score_speaking(), which runs:
+  Whisper (transcribe) -> Azure (pronunciation) -> GPT-4o (grammar/vocab)
+  + Python (confidence from filler/pause/restart signals).
 
 Rating bands (applied to total_score 0-100):
   - 75-100: recommended
   - 60-74:  borderline
   - 0-59:   not_recommended
 """
-from sqlalchemy.orm import Session
 
+import logging
+from sqlalchemy.orm import Session
 from models import Invitation, MCQAnswer, Question, Score
 
+log = logging.getLogger("scoring")
 
 # ------------------------------------------------------------------
 # Reading
@@ -43,25 +45,42 @@ def score_reading(inv: Invitation, db: Session) -> tuple[int, int, int]:
     score = round((correct / total) * 100) if total > 0 else 0
     return score, correct, total
 
-
 # ------------------------------------------------------------------
-# Speaking (stub — replaced by Whisper + Claude in next batch)
+# Speaking — evaluation via Whisper + Azure + GPT-4o.
+# Lazy-imports speaking_eval so that import-time failures (missing Azure SDK,
+# etc.) don't break the rest of the app — they get surfaced at scoring time.
 # ------------------------------------------------------------------
 def score_speaking_stub() -> dict:
     """
-    Placeholder until Whisper + Claude are wired in.
-    Returns the same shape the real scorer will return so the rest of the
-    pipeline can be tested end-to-end.
+    Fallback only. Used when the real evaluator can't run (e.g., missing API keys
+    in dev). Same shape as the real return so the pipeline is consistent.
     """
     return {
-        "breakdown": None,    # will be {"fluency": x, "pronunciation": y, ...}
-        "total": None,        # 0..100, null while pending
+        "breakdown": None,
+        "total": None,
         "feedback": (
             "Speaking section recorded successfully. "
-            "AI evaluation pending — scores will appear once Whisper + Claude are wired up."
+            "AI evaluation could not run (missing API credentials)."
         ),
     }
 
+
+def _run_speaking_eval(inv: Invitation, db: Session) -> dict:
+    """
+    Try to import and run the real speaking evaluator. On any unexpected
+    failure, fall back to the stub so a single bad invitation doesn't
+    poison the whole submission flow.
+    """
+    try:
+        from speaking_eval import score_speaking
+        return score_speaking(inv, db)
+    except Exception as e:
+        log.exception("Speaking evaluation pipeline crashed for invitation %s", inv.id)
+        return {
+            "breakdown": None,
+            "total": None,
+            "feedback": f"Speaking evaluation failed: {type(e).__name__}. Manual review needed.",
+        }
 
 # ------------------------------------------------------------------
 # Combined score + rating
@@ -96,7 +115,7 @@ def score_invitation(inv: Invitation, db: Session) -> Score:
     """
     reading_score, reading_correct, reading_total = score_reading(inv, db)
 
-    speaking = score_speaking_stub()
+    speaking = _run_speaking_eval(inv, db)
     speaking_total = speaking["total"]
 
     total_score = compute_total(reading_score, speaking_total)

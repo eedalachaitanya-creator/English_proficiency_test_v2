@@ -18,9 +18,11 @@ itsdangerous>=2.1          # signed session cookies (used by SessionMiddleware)
 # Multipart / form uploads (audio files on Day 2)
 python-multipart>=0.0.7
 
-# AI providers (Day 2 — installed now to lock versions)
-anthropic>=0.39
-openai>=1.40
+# AI providers — speaking evaluation pipeline
+openai>=1.40                         # Whisper transcription + GPT-4o grading
+azure-cognitiveservices-speech>=1.40 # Pronunciation assessment
 
 # Email (Day 3)
 aiosmtplib>=3.0
+
+azure-cognitiveservices-speech

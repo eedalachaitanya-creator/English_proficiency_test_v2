@@ -97,29 +97,50 @@ async def submit_test(
         ))
 
     # ---- 4. Save audio files to disk + insert AudioRecording rows ----
+    print("\n" + "=" * 70, flush=True)
+    print(f"[SUBMIT] Invitation {inv.id} ({inv.candidate_name}) submitting", flush=True)
+    print(f"[SUBMIT] Topic IDs received from frontend: {topic_id_list}", flush=True)
+    print(f"[SUBMIT] Assigned topic IDs for this candidate: {sorted(assigned_t_ids)}", flush=True)
+    print("=" * 70, flush=True)
+
     AUDIO_DIR.mkdir(exist_ok=True)
     audio_uploads = [audio_0, audio_1, audio_2]
     for i, audio in enumerate(audio_uploads):
         if audio is None:
+            print(f"[SUBMIT] Slot audio_{i}: empty (no file uploaded)", flush=True)
             continue
         if i >= len(topic_id_list):
+            print(f"[SUBMIT] Slot audio_{i}: skipped (no matching topic_id at index {i})", flush=True)
             continue
         topic_id = topic_id_list[i]
         try:
             topic_id = int(topic_id)
         except (TypeError, ValueError):
+            print(f"[SUBMIT] Slot audio_{i}: skipped (topic_id '{topic_id}' is not an int)", flush=True)
             continue
         if topic_id not in assigned_t_ids:
+            print(f"[SUBMIT] Slot audio_{i}: REJECTED (topic_id {topic_id} not assigned to this candidate)", flush=True)
             continue
 
         # Read into memory then write — fine for ≤2 MB audio files. For larger
         # files, stream chunk-by-chunk instead.
         contents = await audio.read()
         if not contents:
+            print(f"[SUBMIT] Slot audio_{i}: skipped (empty body)", flush=True)
             continue
         file_path = AUDIO_DIR / f"inv_{inv.id}_q{i}.webm"
         with open(file_path, "wb") as f:
             f.write(contents)
+
+        size_kb = len(contents) / 1024
+        print(
+            f"[SUBMIT] Slot audio_{i}: SAVED  "
+            f"topic_id={topic_id}  "
+            f"size={size_kb:.1f} KB  "
+            f"mime={audio.content_type or '(none)'}  "
+            f"path={file_path.name}",
+            flush=True,
+        )
 
         db.add(AudioRecording(
             invitation_id=inv.id,
@@ -128,6 +149,10 @@ async def submit_test(
             mime_type=audio.content_type or "audio/webm",
             duration_seconds=None,  # could probe via ffprobe; not critical for v1
         ))
+
+    print("=" * 70, flush=True)
+    print(f"[SUBMIT] All audio files saved. Starting scoring...", flush=True)
+    print("=" * 70 + "\n", flush=True)
 
     # ---- 5. Mark submitted (single-use enforcement) ----
     inv.submitted_at = _utcnow_naive()
