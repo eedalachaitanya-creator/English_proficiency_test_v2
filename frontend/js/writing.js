@@ -131,4 +131,11 @@
     e.preventDefault();
     e.returnValue = '';
   });
+
+  // 3-strike termination from visibility-tracker.js. When the candidate
+  // switches away the 3rd time, the tracker dispatches this event and we
+  // hand off to force-submit.js which posts whatever data exists.
+  document.addEventListener('visibility:terminate', () => {
+    ForceSubmit.terminateAndSubmit();
+  });
 })();

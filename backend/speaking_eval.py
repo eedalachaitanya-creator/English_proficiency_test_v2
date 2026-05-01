@@ -95,8 +95,11 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 # Common English filler words — used by confidence calculation.
 # Kept conservative; a non-native speaker saying "well" once shouldn't be penalized.
+# Variants here mirror the disfluency prompt sent to Whisper, so what we ask
+# Whisper to preserve is what we actually count.
 FILLER_WORDS = {
     "um", "uh", "umm", "uhh", "er", "erm", "ah", "ahh",
+    "hmm", "mhm", "mhmm", "uhm", "ehm",
     "like", "you know", "i mean", "sort of", "kind of",
     "basically", "actually", "literally",
 }
@@ -135,6 +138,17 @@ def transcribe_with_whisper(audio_path: Path) -> dict:
     # verbose_json + word timestamps gives us everything we need for fluency/confidence.
     # We force language="en" — non-English answers will transcribe poorly and that's
     # exactly the signal we want (low scores rather than auto-translation).
+    #
+    # The `prompt` parameter biases Whisper toward keeping disfluencies (umm, uh, ahh)
+    # in the transcript instead of cleaning them up. This is a soft hint, not a hard
+    # rule — Whisper still drops some, especially short or quiet ones. But it
+    # measurably improves filler-word detection rates.
+    DISFLUENCY_PROMPT = (
+        "This is a spontaneous spoken response from an English assessment test. "
+        "It may contain hesitation sounds like um, uh, umm, ahh, hmm, er, erm, mhm, "
+        "and self-corrections. Transcribe them as spoken without cleaning them up."
+    )
+
     t0 = time.time()
     with open(audio_path, "rb") as f:
         result = client.audio.transcriptions.create(
@@ -143,6 +157,7 @@ def transcribe_with_whisper(audio_path: Path) -> dict:
             response_format="verbose_json",
             timestamp_granularities=["word"],
             language="en",
+            prompt=DISFLUENCY_PROMPT,
         )
     elapsed = time.time() - t0
 

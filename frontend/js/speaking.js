@@ -199,12 +199,22 @@
       fd.append('topic_ids', JSON.stringify(recordings.map(r => r.topic_id)));
       // Writing essay — saved during the writing section
       fd.append('essay_text', Store.get('writingEssay', '') || '');
+      // Tab-switching telemetry — accumulated across reading + writing + speaking pages.
+      // Tracker is defined in visibility-tracker.js, loaded on every test page.
+      const tabStats = (typeof Tracker !== 'undefined' && Tracker.getStats)
+        ? Tracker.getStats()
+        : { count: 0, totalSeconds: 0 };
+      fd.append('tab_switches_count', String(tabStats.count));
+      fd.append('tab_switches_total_seconds', String(tabStats.totalSeconds));
       recordings.forEach((r, i) => {
         fd.append(`audio_${i}`, r.blob, `q${i}.webm`);
       });
 
       const res = await api('/api/submit', { method: 'POST', body: fd });
       Store.set('refId', res.ref_id);
+      // Clear visibility tracking so a fresh test in the same browser tab
+      // (unlikely but defensive) doesn't inherit stale counts.
+      if (typeof Tracker !== 'undefined' && Tracker.reset) Tracker.reset();
       window.location.href = 'submitted.html';
     } catch (err) {
       finishBtn.disabled = false;
@@ -229,5 +239,61 @@
   window.addEventListener('beforeunload', e => {
     e.preventDefault();
     e.returnValue = '';
+  });
+
+  // 3-strike termination from visibility-tracker.js. Speaking is special:
+  // any recordings already made are in memory (the `recordings` array),
+  // so we include them rather than calling the generic ForceSubmit which
+  // doesn't know about audio. If 0 recordings were made, the FormData has
+  // no audio fields and the backend handles that gracefully.
+  document.addEventListener('visibility:terminate', async () => {
+    // Stop any in-progress recording so its blob is captured first
+    try { stopRecording(); } catch {}
+
+    // Build the same kind of overlay force-submit would show, but submit
+    // the data WITH whatever audio recordings exist.
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed; inset: 0; z-index: 9999;
+      background: rgba(11, 37, 69, 0.97); color: #fff;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+      padding: 24px; text-align: center;
+    `;
+    overlay.innerHTML = `
+      <div style="font-size: 64px; margin-bottom: 16px;">⏹</div>
+      <h1 style="font-size: 28px; margin-bottom: 12px;">Test Ended</h1>
+      <p style="font-size: 16px; max-width: 480px; line-height: 1.5; margin-bottom: 24px;">
+        Your test has been terminated due to repeated tab switches.
+        We are submitting the data you completed so far.
+      </p>
+      <div style="font-size: 14px; opacity: 0.85;">Submitting…</div>
+    `;
+    document.body.appendChild(overlay);
+
+    const fd = new FormData();
+    fd.append('answers', JSON.stringify(Store.get('readingAnswers', {})));
+    fd.append('topic_ids', JSON.stringify(recordings.map(r => r.topic_id)));
+    fd.append('essay_text', Store.get('writingEssay', '') || '');
+    const stats = (typeof Tracker !== 'undefined' && Tracker.getStats)
+      ? Tracker.getStats()
+      : { count: 0, totalSeconds: 0 };
+    fd.append('tab_switches_count', String(stats.count));
+    fd.append('tab_switches_total_seconds', String(stats.totalSeconds));
+    recordings.forEach((r, i) => {
+      fd.append(`audio_${i}`, r.blob, `q${i}.webm`);
+    });
+
+    try {
+      const res = await api('/api/submit', { method: 'POST', body: fd });
+      Store.set('refId', res.ref_id);
+      if (typeof Tracker !== 'undefined' && Tracker.reset) Tracker.reset();
+      window.location.href = 'submitted.html';
+    } catch (err) {
+      console.error('[speaking-terminate] submission failed:', err);
+      overlay.querySelector('div:last-child').textContent =
+        'Submission could not be completed. Please contact your HR manager.';
+    }
   });
 })();

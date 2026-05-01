@@ -26,10 +26,15 @@ from schemas import (
     QuestionPublic,
     SpeakingTopicPublic,
     WritingTopicPublic,
+    ExamCodeVerifyRequest,
+    ExamCodeVerifyResponse,
 )
 
 
 router = APIRouter(tags=["candidate"])
+
+# Code-entry security
+MAX_CODE_ATTEMPTS = 3  # after this many wrong codes, invitation is locked
 
 # v1 constants — match the locked scope.
 WRITTEN_QUESTIONS_PER_TEST = 15
@@ -140,11 +145,16 @@ def _assign_content(inv: Invitation, db: Session):
 # Routes
 # ------------------------------------------------------------------
 @router.get("/exam/{token}")
-def open_exam(token: str, request: Request, db: Session = Depends(get_db)):
+def open_exam(token: str, db: Session = Depends(get_db)):
     """
-    Candidate's URL handler. Validates the token, locks content if first visit,
-    sets a session cookie tying this browser to this invitation, and redirects
-    to the instructions page.
+    Candidate's URL handler.
+
+    Validates the token exists and the invitation is active. Does NOT set a
+    session cookie yet — that happens only after the access code is verified.
+    Redirects to the code-entry page.
+
+    Security note: a leaked URL alone now yields nothing useful — the attacker
+    still needs the 6-digit code (sent to candidate's email separately by HR).
     """
     inv = db.query(Invitation).filter(Invitation.token == token).first()
     if not inv:
@@ -152,16 +162,90 @@ def open_exam(token: str, request: Request, db: Session = Depends(get_db)):
 
     _check_invitation_active(inv)
 
-    # First-visit: assign content + record start time
+    # If the invitation is locked from too many failed code attempts, we still
+    # show the code page — we just won't accept any code there. The page will
+    # display the lockout message. Better UX than a hard error here.
+    return RedirectResponse(url=f"/exam-code.html?token={token}", status_code=302)
+
+
+@router.post("/api/exam/verify-code", response_model=ExamCodeVerifyResponse)
+def verify_code(
+    payload: ExamCodeVerifyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Candidate enters their 6-digit code on /exam-code.html. This endpoint:
+      1. Looks up the invitation by token.
+      2. Rejects if invitation is expired/submitted/locked (no code is checked).
+      3. Compares submitted code to stored code (constant-time-ish via ==).
+      4. On wrong code, increments failed_code_attempts. If we hit
+         MAX_CODE_ATTEMPTS, sets code_locked=True and refuses further attempts.
+      5. On correct code: resets the counter, sets the session cookie,
+         locks content if first visit, and tells frontend to redirect.
+
+    We DO return attempts_remaining on wrong code so the candidate isn't
+    fumbling in the dark. The token itself is the secret that gates this
+    endpoint — without it, an attacker can't even try.
+    """
+    inv = db.query(Invitation).filter(Invitation.token == payload.token).first()
+    if not inv:
+        # Same generic-ish error whether token doesn't exist or is malformed —
+        # don't leak which one. 404 because that's the most useful semantics.
+        raise HTTPException(status_code=404, detail="This test link is invalid.")
+
+    # Active checks (expired, already submitted)
+    _check_invitation_active(inv)
+
+    # Locked-out check — refuse before checking the code
+    if inv.code_locked:
+        raise HTTPException(
+            status_code=423,  # Locked
+            detail=(
+                "Too many wrong attempts. This test link has been locked. "
+                "Please contact your HR manager to receive a new code."
+            ),
+        )
+
+    # Code comparison. Plain == is fine for a 6-digit numeric code; brute-force
+    # is already prevented by the attempt counter. Strip whitespace in case the
+    # candidate pasted with extra spaces.
+    submitted_code = payload.code.strip()
+    if submitted_code != inv.access_code:
+        inv.failed_code_attempts = (inv.failed_code_attempts or 0) + 1
+        if inv.failed_code_attempts >= MAX_CODE_ATTEMPTS:
+            inv.code_locked = True
+            db.commit()
+            raise HTTPException(
+                status_code=423,
+                detail=(
+                    f"Too many wrong attempts ({MAX_CODE_ATTEMPTS}). "
+                    "This test link has been locked. Please contact your HR "
+                    "manager to receive a new code."
+                ),
+            )
+        attempts_left = MAX_CODE_ATTEMPTS - inv.failed_code_attempts
+        db.commit()
+        # 401 because the credential (code) was wrong
+        raise HTTPException(
+            status_code=401,
+            detail=f"Wrong code. {attempts_left} attempt{'s' if attempts_left != 1 else ''} remaining.",
+        )
+
+    # Code is correct — reset counter, lock content if first visit, set session.
+    inv.failed_code_attempts = 0
+
     if inv.assigned_question_ids is None:
         _assign_content(inv, db)
         inv.started_at = _utcnow_naive()
-        db.commit()
 
-    # Set candidate session — used by /api/test-content and /api/submit (Day 2)
+    db.commit()
     request.session["invitation_id"] = inv.id
 
-    return RedirectResponse(url="/instructions.html", status_code=302)
+    return ExamCodeVerifyResponse(
+        success=True,
+        redirect_to="/instructions.html",
+    )
 
 
 @router.get("/api/test-content", response_model=TestContent)

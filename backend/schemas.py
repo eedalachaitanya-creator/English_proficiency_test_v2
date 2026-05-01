@@ -37,7 +37,26 @@ class InviteCreateResponse(BaseModel):
     invitation_id: int
     token: str
     exam_url: str
+    access_code: str       # 6-digit code candidate enters after opening URL
     expires_at: datetime
+
+
+class ExamCodeVerifyRequest(BaseModel):
+    """Request body for POST /api/exam/verify-code — sent by exam-code.html."""
+    token: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=6, max_length=6)
+
+
+class ExamCodeVerifyResponse(BaseModel):
+    """
+    Response from code verification.
+    `attempts_remaining` lets the frontend show 'X attempts left' on wrong code.
+    `redirect_to` tells the frontend where to send the candidate on success.
+    """
+    success: bool
+    attempts_remaining: Optional[int] = None
+    redirect_to: Optional[str] = None
+    detail: Optional[str] = None
 
 
 # ============================================================
@@ -145,6 +164,13 @@ class ScoreDetail(BaseModel):
     total_score: Optional[int]
     rating: Optional[str]
     ai_feedback: Optional[str]
+
+    # Tab-switching telemetry from the candidate's browser. count is the
+    # number of times they switched away (after the 2-second threshold);
+    # total_seconds is cumulative time spent away. HR uses these as one
+    # signal among many — high values warrant investigation, not auto-rejection.
+    tab_switches_count: Optional[int] = 0
+    tab_switches_total_seconds: Optional[int] = 0
 
     # Per-recording metadata. Frontend uses these IDs to fetch audio bytes
     # via GET /api/hr/audio/{id}. Empty list if candidate hasn't submitted yet.

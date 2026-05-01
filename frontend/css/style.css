@@ -470,8 +470,10 @@ table.results tbody tr:last-child td { border-bottom: none; }
 .modal {
   background: var(--white);
   border-radius: var(--radius);
-  padding: 28px;
+  padding: 24px 28px;
   width: 100%; max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: var(--shadow-md);
   animation: scale-in 0.15s ease-out;
 }

@@ -10,7 +10,7 @@ Schema mirror of docs/requirements.md:
 """
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, JSON, CheckConstraint
+    Column, Integer, String, Text, DateTime, ForeignKey, JSON, CheckConstraint, Boolean
 )
 from sqlalchemy.orm import relationship
 from database import Base
@@ -130,6 +130,19 @@ class Invitation(Base):
     expires_at = Column(DateTime, nullable=False)         # created_at + 24h
     started_at = Column(DateTime, nullable=True)          # first time URL opened
     submitted_at = Column(DateTime, nullable=True)        # final submission
+
+    # Access code (6-digit) candidate must enter after clicking URL.
+    # Lockout: 5 wrong attempts -> code_locked=True, HR must regenerate.
+    access_code = Column(String(6), nullable=False)
+    failed_code_attempts = Column(Integer, default=0, nullable=False)
+    code_locked = Column(Boolean, default=False, nullable=False)
+
+    # Tab-switching telemetry — captured by frontend Page Visibility API and
+    # sent at submit time. Used by HR as ONE signal among many for cheating
+    # investigation. Not a verdict on its own — a Slack notification can
+    # cause a switch too. HR interprets the data, doesn't act blindly.
+    tab_switches_count = Column(Integer, default=0, nullable=False)
+    tab_switches_total_seconds = Column(Integer, default=0, nullable=False)
 
     hr = relationship("HRAdmin", back_populates="invitations")
     passage = relationship("Passage")

@@ -18,8 +18,10 @@
     .modal {
       background: var(--white);
       border-radius: var(--radius);
-      padding: 28px;
+      padding: 24px 28px;
       width: 100%; max-width: 480px;
+      max-height: 90vh;          /* never taller than 90% of the viewport */
+      overflow-y: auto;          /* scroll inside the modal when content overflows */
       box-shadow: var(--shadow-md);
     }
     .modal h2 { margin-bottom: 6px; }
@@ -183,6 +185,21 @@
 
         <div id="inviteResult" class="invite-result hidden"></div>
       </form>
+    </div>
+  </div>
+
+  <!-- Regenerate code result modal — shown after a successful code regeneration -->
+  <div class="modal-backdrop" id="regenModal">
+    <div class="modal">
+      <h2>New Access Code Generated</h2>
+      <p class="subtitle">The candidate's previous code is no longer valid. Send them the new URL and code.</p>
+
+      <div id="regenResult" class="invite-result"></div>
+
+      <div class="flex-row mt-4">
+        <span class="spacer"></span>
+        <button type="button" id="regenCloseBtn" class="btn btn-primary">Done</button>
+      </div>
     </div>
   </div>
 

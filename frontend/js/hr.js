@@ -132,10 +132,34 @@ async function showDetail(row) {
 
   // Reading
   if (detail.reading_score != null) {
+    // Tab-switching summary. Three states with progressive concern:
+    //   0 switches      -> green check (clean)
+    //   1-2 switches    -> yellow warning (notable)
+    //   3+ switches     -> red flag (test was likely auto-terminated)
+    // Shown only on submitted candidates because pre-submission tab data
+    // isn't reliable (the candidate hasn't sent it yet).
+    const tsCount = detail.tab_switches_count || 0;
+    const tsSeconds = detail.tab_switches_total_seconds || 0;
+    let tabInfo;
+    if (tsCount === 0) {
+      tabInfo = `<span style="color: var(--green);">✓ No tab switches detected</span>`;
+    } else {
+      const color = tsCount >= 3 ? 'var(--red)' : 'var(--yellow)';
+      const symbol = tsCount >= 3 ? '⚠️' : '⚠';
+      const minLabel = tsSeconds >= 60
+        ? `${Math.floor(tsSeconds / 60)}m ${tsSeconds % 60}s`
+        : `${tsSeconds}s`;
+      const terminatedNote = tsCount >= 3
+        ? ' <strong>(test auto-terminated)</strong>'
+        : '';
+      tabInfo = `<span style="color: ${color};">${symbol} ${tsCount} tab switch${tsCount !== 1 ? 'es' : ''} (${minLabel} away)${terminatedNote}</span>`;
+    }
+
     document.getElementById('readingDetail').innerHTML = `
       Score: <strong>${detail.reading_score} / 100</strong><br>
       Correct: ${detail.reading_correct} of ${detail.reading_total}<br>
-      Submitted: ${new Date(detail.submitted_at).toLocaleString()}
+      Submitted: ${new Date(detail.submitted_at).toLocaleString()}<br>
+      ${tabInfo}
     `;
   } else {
     document.getElementById('readingDetail').textContent = 'Not yet submitted.';
@@ -258,16 +282,44 @@ function bindEvents() {
       });
       resultEl.innerHTML = `
         <strong>Invitation created.</strong><br>
-        Send this URL to <em>${escapeHtml(candidate_email)}</em>:<br>
-        <span style="user-select: all;">${escapeHtml(res.exam_url)}</span><br>
-        <small>Expires: ${new Date(res.expires_at).toLocaleString()}</small><br>
-        <button type="button" class="btn btn-secondary" id="copyUrlBtn">Copy URL</button>
+        Send BOTH the URL and the 6-digit code to <em>${escapeHtml(candidate_email)}</em>.<br>
+        <small>Expires: ${new Date(res.expires_at).toLocaleString()}</small>
+
+        <div style="margin-top: 14px;">
+          <div style="font-size: 11px; font-weight: bold; color: var(--text-muted); letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 4px;">
+            Exam URL
+          </div>
+          <div style="display: flex; gap: 8px; align-items: stretch;">
+            <span id="urlValue" style="flex: 1; user-select: all; padding: 8px 10px; background: var(--white); border: 1px solid var(--border); border-radius: var(--radius); font-size: 12px; word-break: break-all;">${escapeHtml(res.exam_url)}</span>
+            <button type="button" class="btn btn-secondary" id="copyUrlBtn" style="padding: 6px 14px; font-size: 12px; white-space: nowrap;">Copy URL</button>
+          </div>
+        </div>
+
+        <div style="margin-top: 12px;">
+          <div style="font-size: 11px; font-weight: bold; color: var(--text-muted); letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 4px;">
+            Access Code (candidate must enter this)
+          </div>
+          <div style="display: flex; gap: 8px; align-items: stretch;">
+            <span id="codeValue" style="flex: 1; user-select: all; padding: 8px 10px; background: var(--white); border: 1px solid var(--border); border-radius: var(--radius); font-size: 18px; font-family: var(--font-mono); font-weight: bold; letter-spacing: 4px; color: var(--orange); text-align: center;">${escapeHtml(res.access_code)}</span>
+            <button type="button" class="btn btn-secondary" id="copyCodeBtn" style="padding: 6px 14px; font-size: 12px; white-space: nowrap;">Copy Code</button>
+          </div>
+        </div>
       `;
       resultEl.classList.remove('hidden');
-      document.getElementById('copyUrlBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(res.exam_url);
-        document.getElementById('copyUrlBtn').textContent = 'Copied ✓';
-      });
+
+      // Wire up both copy buttons. Each shows "Copied ✓" briefly then resets,
+      // so HR can copy URL, then code, then URL again without confusion.
+      function wireCopyButton(btnId, value) {
+        const btn = document.getElementById(btnId);
+        const original = btn.textContent;
+        btn.addEventListener('click', () => {
+          navigator.clipboard.writeText(value);
+          btn.textContent = 'Copied ✓';
+          setTimeout(() => { btn.textContent = original; }, 1800);
+        });
+      }
+      wireCopyButton('copyUrlBtn', res.exam_url);
+      wireCopyButton('copyCodeBtn', res.access_code);
       // Refresh table in background
       loadResults();
     } catch (err) {
