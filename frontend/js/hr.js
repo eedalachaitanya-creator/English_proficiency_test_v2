@@ -151,11 +151,18 @@ async function showDetail(row) {
   let speakingHtml = '';
 
   if (detail.speaking_breakdown) {
+    // Two-column flex per row so labels and scores line up — HTML collapses
+    // multiple spaces, so padEnd alignment never worked here.
     const lines = Object.entries(detail.speaking_breakdown)
-      .map(([k, v]) => `${k.padEnd(15)} ${v}`)
-      .join('<br>');
+      .map(([k, v]) => `
+        <div class="text-mono" style="display: flex; justify-content: space-between; max-width: 240px;">
+          <span>${escapeHtml(k)}</span>
+          <span>${v == null ? '—' : v}</span>
+        </div>
+      `)
+      .join('');
     speakingHtml += lines +
-      `<br><br><strong>Score: ${detail.speaking_score} / 100</strong>`;
+      `<div style="margin-top: 12px;"><strong>Score: ${detail.speaking_score} / 100</strong></div>`;
   } else if (detail.submitted_at) {
     speakingHtml += '<em>AI scoring pending.</em>';
   } else {
@@ -288,17 +295,24 @@ function renderWritingDetail(detail) {
 
   let html = '';
 
-  // Score block (rubric or pending message)
+  // Score block (rubric or pending message). Two-column flex per row so the
+  // dimension labels and scores line up without depending on whitespace
+  // preservation (HTML collapses multiple spaces, so padEnd never worked here).
   if (detail.writing_breakdown) {
     const lines = Object.entries(detail.writing_breakdown)
-      .map(([k, v]) => `<span class="text-mono">${escapeHtml(k.padEnd(15))} ${v}</span>`)
-      .join('<br>');
+      .map(([k, v]) => `
+        <div class="text-mono" style="display: flex; justify-content: space-between; max-width: 240px;">
+          <span>${escapeHtml(k)}</span>
+          <span>${v == null ? '—' : v}</span>
+        </div>
+      `)
+      .join('');
     html += `<div style="margin-bottom: 12px;">
-      ${lines}<br><br>
-      <strong>Score: ${detail.writing_score} / 100</strong>
+      ${lines}
+      <div style="margin-top: 12px;"><strong>Score: ${detail.writing_score} / 100</strong></div>
     </div>`;
   } else {
-    html += `<div style="margin-bottom: 12px;"><em>AI grading pending — Task Response, Grammar, Vocabulary, Coherence will be filled in once Claude is wired up.</em></div>`;
+    html += `<div style="margin-bottom: 12px;"><em>AI grading not available for this submission — see feedback below for details.</em></div>`;
   }
 
   // Topic

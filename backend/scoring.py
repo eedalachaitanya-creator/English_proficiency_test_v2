@@ -4,8 +4,11 @@ Scoring module.
 Reading scoring is deterministic (count correct ÷ total) — runs immediately
 on submission, no API calls, free.
 
-Writing scoring is stubbed for now — Claude rubric grading (Task Response,
-Grammar, Vocabulary, Coherence) lands in a later batch.
+Writing scoring delegates to writing_eval.score_writing(), which sends the
+candidate's essay + the assigned prompt to GPT-4o and gets back a rubric
+breakdown (Task Response / Grammar / Vocabulary / Coherence, each 0..25)
+plus a short feedback paragraph for HR. A stub fallback runs if the call
+can't import or fails.
 
 Speaking scoring delegates to speaking_eval.score_speaking(), which runs:
   Whisper (transcribe) -> Azure (pronunciation) -> GPT-4o (grammar/vocab)
@@ -50,21 +53,41 @@ def score_reading(inv: Invitation, db: Session) -> tuple[int, int, int]:
     return score, correct, total
 
 # ------------------------------------------------------------------
-# Writing (stub — replaced by Claude rubric in a later batch)
+# Writing — evaluation via GPT-4o (writing_eval.score_writing).
+# Lazy-imports writing_eval so import-time failures (e.g. openai not installed)
+# don't break the rest of the app — they get surfaced at scoring time.
 # ------------------------------------------------------------------
 def score_writing_stub() -> dict:
     """
-    Placeholder until Claude is wired in to grade essays.
-    The rubric: Task Response 25 / Grammar 25 / Vocabulary 25 / Coherence 25.
+    Fallback only. Used when the real evaluator can't run (e.g., OPENAI_API_KEY
+    missing in dev). Same shape as the real return so the pipeline is consistent.
     """
     return {
-        "breakdown": None,    # will be {"task_response": x, "grammar": y, "vocabulary": z, "coherence": w}
+        "breakdown": None,
         "total": None,
         "feedback": (
-            "Essay received. AI grading pending — Task Response, Grammar, "
-            "Vocabulary, and Coherence will be evaluated once Claude is wired up."
+            "Essay received. AI grading could not run "
+            "(missing OPENAI_API_KEY or evaluator failure)."
         ),
     }
+
+
+def _run_writing_eval(inv: Invitation, db: Session) -> dict:
+    """
+    Try to import and run the real writing evaluator. On any unexpected
+    failure, fall back to the stub so a single bad invitation doesn't
+    poison the whole submission flow.
+    """
+    try:
+        from writing_eval import score_writing
+        return score_writing(inv, db)
+    except Exception as e:
+        log.exception("Writing evaluation pipeline crashed for invitation %s", inv.id)
+        return {
+            "breakdown": None,
+            "total": None,
+            "feedback": f"Writing evaluation failed: {type(e).__name__}. Manual review needed.",
+        }
 
 
 # ------------------------------------------------------------------
@@ -153,14 +176,15 @@ def compute_total(
 def score_invitation(inv: Invitation, db: Session) -> Score:
     """
     Compute reading + writing + speaking scores for this invitation, persist a Score row.
-    Reading is deterministic. Writing is stubbed (Claude rubric pending). Speaking runs
-    the real Whisper + Azure + GPT-4o pipeline (or stub fallback on failure).
+    Reading is deterministic. Writing runs GPT-4o on the candidate's essay (or stub
+    fallback on failure). Speaking runs the Whisper + Azure + GPT-4o pipeline (or
+    stub fallback on failure).
     Idempotent in the sense that calling twice creates two scores (don't do that);
     the caller should ensure submitted_at is set first and only call once.
     """
     reading_score, reading_correct, reading_total = score_reading(inv, db)
 
-    writing = score_writing_stub()
+    writing = _run_writing_eval(inv, db)
     writing_total = writing["total"]
 
     speaking = _run_speaking_eval(inv, db)

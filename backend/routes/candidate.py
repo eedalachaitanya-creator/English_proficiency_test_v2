@@ -131,7 +131,7 @@ def _assign_content(inv: Invitation, db: Session):
         raise HTTPException(
             status_code=500,
             detail=f"No writing prompts seeded for difficulty='{inv.difficulty}'. "
-                   f"Run migrate_writing.py and then seed.py --reset.",
+                   f"Run `alembic upgrade head` (if needed) and then `python3 seed.py`.",
         )
     inv.assigned_writing_topic_id = random.choice(writing_topics).id
 

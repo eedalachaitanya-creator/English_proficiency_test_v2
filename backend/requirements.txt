@@ -5,9 +5,10 @@ uvicorn[standard]>=0.27
 # Database
 sqlalchemy>=2.0
 psycopg2-binary>=2.9       # for PostgreSQL on Render (Day 3 deploy)
+alembic>=1.13              # schema migrations — single source of truth is models.py
 
 # Validation & settings
-pydantic>=2.5
+pydantic[email]>=2.5       # [email] pulls in email-validator, required by EmailStr
 pydantic-settings>=2.1
 python-dotenv>=1.0
 
@@ -24,5 +25,3 @@ azure-cognitiveservices-speech>=1.40 # Pronunciation assessment
 
 # Email (Day 3)
 aiosmtplib>=3.0
-
-azure-cognitiveservices-speech
