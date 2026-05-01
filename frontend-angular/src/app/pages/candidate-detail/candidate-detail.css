@@ -1,0 +1,18 @@
+/* Component-scoped styles for the Candidate Detail page.
+ *
+ * Visual design lives in src/styles.css (the global stylesheet from File 1):
+ *   .page                → Page wrapper with max-width and padding
+ *   .card + .card-header → White panels with navy headers (used by all 4 detail panels)
+ *   .reading-grid        → 2-column grid for Reading + Speaking side-by-side
+ *   .text-mono / .text-muted → Mono font and muted-grey color helpers
+ *   .notice              → Orange-bordered error banner
+ *   .topnav + .topnav.hr → Navy header (handled by Topnav component)
+ *   .footer              → Footer strip (handled by Footer component)
+ *
+ * The :host display rule prevents Angular's auto-generated <app-candidate-detail>
+ * wrapper from collapsing to inline display.
+ */
+:host {
+  display: block;
+  min-height: 100vh;
+}

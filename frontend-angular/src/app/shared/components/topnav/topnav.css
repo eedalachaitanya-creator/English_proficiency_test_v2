@@ -1,0 +1,12 @@
+/* Component-scoped styles for Topnav.
+ *
+ * The visual design (.topnav, .topnav.hr, .brand, .meta) lives in the
+ * global src/styles.css from File 1. Nothing to override here.
+ *
+ * The :host rule keeps Angular's auto-generated wrapper element from
+ * adding its own block-level box around the <header>, which would push
+ * the topnav down by Angular's default component spacing.
+ */
+:host {
+  display: block;
+}

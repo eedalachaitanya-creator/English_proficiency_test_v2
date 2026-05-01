@@ -1,0 +1,159 @@
+<app-topnav
+  title="HR Portal  —  Candidate Detail"
+  [meta]="hrEmail()"
+  variant="hr"
+  [showLogout]="true"
+  (logout)="onLogout()">
+</app-topnav>
+
+<main class="page">
+
+  <!-- Page header: back link + candidate name -->
+  <div class="flex-row mb-4" style="align-items: baseline;">
+    <a routerLink="/dashboard" class="text-muted" style="text-decoration: none;">
+      ← Back to Dashboard
+    </a>
+    <span class="spacer"></span>
+  </div>
+
+  @if (loading()) {
+    <div class="card">
+      <div class="text-mono">Loading candidate detail…</div>
+    </div>
+  } @else if (loadError()) {
+    <div class="notice">
+      <strong>{{ loadError() }}</strong><br>
+      <a routerLink="/dashboard">Return to dashboard</a>
+    </div>
+  } @else if (detail()) {
+    <h1 style="margin-top: 0;">
+      {{ detail()!.candidate_name }}
+    </h1>
+    <div class="text-muted" style="margin-bottom: 24px;">
+      {{ detail()!.candidate_email }} &nbsp;•&nbsp;
+      Difficulty: {{ detail()!.difficulty }} &nbsp;•&nbsp;
+      Submitted: {{ formatSubmittedDateTime(detail()!.submitted_at) }}
+    </div>
+
+    <!-- Reading + Speaking row -->
+    <div class="reading-grid">
+      <!-- Reading breakdown -->
+      <div class="card">
+        <div class="card-header">READING BREAKDOWN</div>
+        <div class="text-mono">
+          @if (detail()!.reading_score === null || detail()!.reading_score === undefined) {
+            Not yet submitted.
+          } @else {
+            Score: <strong>{{ detail()!.reading_score }} / 100</strong><br>
+            Correct: {{ detail()!.reading_correct }} of {{ detail()!.reading_total }}<br>
+            Submitted: {{ formatSubmittedDateTime(detail()!.submitted_at) }}
+          }
+        </div>
+      </div>
+
+      <!-- Speaking breakdown -->
+      <div class="card">
+        <div class="card-header">SPEAKING (LLM SCORED)</div>
+        <div class="text-mono">
+          @if (detail()!.speaking_breakdown) {
+            @for (entry of breakdownEntries(detail()!.speaking_breakdown); track entry.key) {
+              <div style="display: flex; justify-content: space-between; max-width: 240px;">
+                <span>{{ entry.key }}</span>
+                <span>@if (entry.value === null) { — } @else { {{ entry.value }} }</span>
+              </div>
+            }
+            <div style="margin-top: 12px;">
+              <strong>Score: {{ detail()!.speaking_score }} / 100</strong>
+            </div>
+          } @else if (detail()!.submitted_at) {
+            <em>AI scoring pending.</em>
+          } @else {
+            Not yet submitted.
+          }
+
+          <!-- Audio recordings list — one player per question -->
+          @if (detail()!.audio_recordings && detail()!.audio_recordings.length > 0) {
+            <br><br><strong>RECORDED RESPONSES</strong>
+            @for (rec of detail()!.audio_recordings; track rec.id) {
+              <div style="margin-top: 12px; padding: 10px; background: var(--bg); border-radius: var(--radius);">
+                <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">
+                  {{ audioQuestionLabel(rec.question_index) }}: {{ rec.topic_prompt }}
+                </div>
+                <audio controls preload="none" style="width: 100%; height: 36px;"
+                       [src]="audioUrl(rec.id)"></audio>
+                @if (rec.transcript) {
+                  <div style="margin-top: 6px; font-size: 12px; color: var(--text); font-family: var(--font-body);">
+                    <em>Transcript:</em> {{ rec.transcript }}
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+      </div>
+    </div>
+
+    <!-- Writing detail (full width) -->
+    <div class="card mt-6">
+      <div class="card-header">WRITING (LLM SCORED) — ESSAY + RUBRIC</div>
+      <div>
+        @if (!detail()!.submitted_at) {
+          Not yet submitted.
+        } @else {
+          @if (detail()!.writing_breakdown) {
+            <div style="margin-bottom: 12px;">
+              @for (entry of breakdownEntries(detail()!.writing_breakdown); track entry.key) {
+                <div class="text-mono" style="display: flex; justify-content: space-between; max-width: 240px;">
+                  <span>{{ entry.key }}</span>
+                  <span>@if (entry.value === null) { — } @else { {{ entry.value }} }</span>
+                </div>
+              }
+              <div style="margin-top: 12px;">
+                <strong>Score: {{ detail()!.writing_score }} / 100</strong>
+              </div>
+            </div>
+          } @else {
+            <div style="margin-bottom: 12px;">
+              <em>AI grading not available for this submission — see feedback below for details.</em>
+            </div>
+          }
+
+          @if (detail()!.writing_topic_text) {
+            <div style="margin-top: 16px; padding: 10px 12px; background: var(--bg); border-radius: var(--radius); font-size: 12px; color: var(--text-muted);">
+              <strong>Prompt:</strong> {{ detail()!.writing_topic_text }}
+            </div>
+          }
+
+          @if (detail()!.essay_text) {
+            <div style="margin-top: 12px;">
+              <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+                Candidate's essay
+                @if (detail()!.essay_word_count !== null) { ({{ detail()!.essay_word_count }} words) }
+              </div>
+              <div style="white-space: pre-wrap; padding: 14px; background: var(--white); border: 1px solid var(--border); border-radius: var(--radius); line-height: 1.5; max-height: 320px; overflow-y: auto;">{{ detail()!.essay_text }}</div>
+            </div>
+          } @else {
+            <div style="margin-top: 12px; color: var(--text-muted); font-style: italic;">
+              No essay text on file.
+            </div>
+          }
+        }
+      </div>
+    </div>
+
+    <!-- AI Feedback -->
+    <div class="card mt-6">
+      <div class="card-header">AI FEEDBACK SUMMARY</div>
+      <div style="white-space: pre-wrap;">
+        @if (detail()!.ai_feedback) {
+          {{ detail()!.ai_feedback }}
+        } @else {
+          AI feedback will appear here after the candidate submits.
+        }
+      </div>
+    </div>
+
+  }
+</main>
+
+<app-footer text="© Company HR  •  Scores written by Claude (LLM rubric scoring)"></app-footer>

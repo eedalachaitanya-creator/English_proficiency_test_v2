@@ -1,0 +1,22 @@
+/* Component-scoped styles for the HR Dashboard.
+ *
+ * Visual design lives in src/styles.css (the global stylesheet from File 1):
+ *   .kpi-grid + .kpi    → KPI card layout and color variants (accent/alert/success)
+ *   table.results        → Candidate table styling, header row, hover state
+ *   .badge + variants    → Status badge pills (reviewed/new/flagged)
+ *   .notice              → Orange-bordered error banner
+ *   .topnav + .topnav.hr → Navy header (handled by Topnav component)
+ *   .footer              → Footer strip (handled by Footer component)
+ *
+ * Phase 3B will add:
+ *   - .difficulty-radios styles for the invite modal
+ *   - .invite-result styles for the post-invite "copy URL" block
+ *
+ * For now, the only rule we need is :host display so Angular's auto-generated
+ * <app-hr-dashboard> wrapper doesn't collapse to inline display, which would
+ * break the page layout below the topnav.
+ */
+:host {
+  display: block;
+  min-height: 100vh;
+}

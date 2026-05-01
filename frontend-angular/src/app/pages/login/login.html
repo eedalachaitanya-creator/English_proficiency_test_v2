@@ -1,0 +1,63 @@
+<app-topnav
+  title="English Proficiency Test  —  HR Portal"
+  meta="Internal use only">
+</app-topnav>
+
+<main class="page-narrow">
+  <div class="card">
+    <h1>HR Sign In</h1>
+    <p class="subtitle">Log in to invite candidates and view results.</p>
+
+    <form (ngSubmit)="onSubmit()" novalidate>
+
+      <div class="field">
+        <label for="email">Email</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          placeholder="you@company.com"
+          required
+          autofocus
+          [(ngModel)]="email"
+          [disabled]="submitting()">
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          placeholder="••••••••"
+          required
+          [(ngModel)]="password"
+          [disabled]="submitting()">
+      </div>
+
+      <div class="field-error">
+        @if (errorMessage()) {
+          {{ errorMessage() }}
+        }
+      </div>
+
+      <button
+        type="submit"
+        class="btn btn-primary btn-block"
+        [disabled]="submitting()">
+        @if (submitting()) {
+          Signing in…
+        } @else {
+          SIGN IN  →
+        }
+      </button>
+
+    </form>
+
+    <p class="text-muted text-center mt-6" style="font-size: 12px;">
+      New HR account? Ask an admin to create one via the CLI script.
+    </p>
+  </div>
+</main>
+
+<app-footer></app-footer>

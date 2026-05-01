@@ -1,0 +1,301 @@
+<app-topnav
+  title="HR Portal  —  English Proficiency Results"
+  [meta]="hrEmail()"
+  variant="hr"
+  [showLogout]="true"
+  (logout)="onLogout()">
+</app-topnav>
+
+<main class="page">
+
+  @if (loadError()) {
+    <div class="notice">
+      <strong>Could not load results.</strong>
+      {{ loadError() }}
+    </div>
+  }
+
+  <!-- KPI cards -->
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="label">Total Invitations</div>
+      <div class="value">
+        @if (loading()) { — } @else { {{ kpiTotal() }} }
+      </div>
+    </div>
+
+    <div class="kpi accent">
+      <div class="label">Avg Score</div>
+      <div class="value">
+        @if (loading() || kpiAvg() === null) { — }
+        @else { {{ kpiAvg() }} / 100 }
+      </div>
+    </div>
+
+    <div class="kpi alert">
+      <div class="label">Pending</div>
+      <div class="value">
+        @if (loading()) { — } @else { {{ kpiPending() }} }
+      </div>
+    </div>
+
+    <div class="kpi success">
+      <div class="label">Submitted</div>
+      <div class="value">
+        @if (loading()) { — } @else { {{ kpiSubmitted() }} }
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters + invite button -->
+  <div class="flex-row mb-4">
+    <input
+      type="text"
+      placeholder="🔍  Search candidate…"
+      style="padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); width: 260px;"
+      [(ngModel)]="searchQuery"
+      (input)="applyFilters()">
+
+    <select
+      style="padding: 10px; border-radius: var(--radius); border: 1px solid var(--border);"
+      [(ngModel)]="statusFilter"
+      (change)="applyFilters()">
+      <option value="">All statuses</option>
+      <option value="submitted">Submitted</option>
+      <option value="pending">Pending</option>
+    </select>
+
+    <span class="spacer"></span>
+
+    <button class="btn btn-primary" (click)="openInvite()">+ INVITE NEW CANDIDATE</button>
+  </div>
+
+  <!-- Results table -->
+  <table class="results">
+    <thead>
+      <tr>
+        <th>Candidate</th>
+        <th>Email</th>
+        <th>Difficulty</th>
+        <th>Submitted</th>
+        <th>Reading</th>
+        <th>Writing</th>
+        <th>Speaking</th>
+        <th>Total</th>
+        <th>Rating</th>
+      </tr>
+    </thead>
+    <tbody>
+      @if (loading()) {
+        <tr>
+          <td colspan="9" class="text-muted text-center" style="padding: 24px;">
+            Loading…
+          </td>
+        </tr>
+      } @else if (filteredResults().length === 0) {
+        <tr>
+          <td colspan="9" class="text-muted text-center" style="padding: 24px;">
+            @if (allResults().length === 0) {
+              No invitations yet. Click "+ INVITE NEW CANDIDATE" to send the first one.
+            } @else {
+              No candidates match your filters.
+            }
+          </td>
+        </tr>
+      } @else {
+        @for (r of pagedResults(); track r.invitation_id) {
+          <tr (click)="onRowClick(r)" style="cursor: pointer;">
+            <td><strong>{{ r.candidate_name }}</strong></td>
+            <td class="text-muted">{{ r.candidate_email }}</td>
+            <td>{{ r.difficulty }}</td>
+            <td>{{ formatSubmittedDate(r.submitted_at) }}</td>
+            <td class="text-mono">
+              @if (r.reading_score !== null) { {{ r.reading_score }} } @else { — }
+            </td>
+            <td class="text-mono">
+              @if (r.writing_score !== null) { {{ r.writing_score }} } @else { — }
+            </td>
+            <td class="text-mono">
+              @if (r.speaking_score !== null) { {{ r.speaking_score }} } @else { — }
+            </td>
+            <td>
+              @if (r.total_score !== null) { <strong>{{ r.total_score }}</strong> } @else { — }
+            </td>
+            <td>
+              @if (r.rating) {
+                <span class="badge {{ ratingClass(r.rating) }}">{{ ratingLabel(r.rating) }}</span>
+              } @else {
+                <span class="text-muted">pending</span>
+              }
+            </td>
+          </tr>
+        }
+      }
+    </tbody>
+  </table>
+
+  <!-- Pagination controls -->
+  @if (!loading() && filteredResults().length > 0 && totalPages() > 1) {
+    <div class="flex-row mt-4" style="align-items: center; justify-content: center;">
+      <button
+        type="button"
+        class="btn btn-secondary"
+        [disabled]="currentPage() === 1"
+        (click)="prevPage()">
+        ← Previous
+      </button>
+
+      <div style="display: flex; gap: 4px; margin: 0 12px;">
+        @for (p of pageNumbers(); track $index) {
+          @if (p === '…') {
+            <span class="text-muted" style="padding: 8px 4px;">…</span>
+          } @else {
+            <button
+              type="button"
+              class="btn"
+              [class.btn-primary]="p === currentPage()"
+              [class.btn-secondary]="p !== currentPage()"
+              style="min-width: 40px; padding: 6px 10px;"
+              (click)="goToPage(+p)">
+              {{ p }}
+            </button>
+          }
+        }
+      </div>
+
+      <button
+        type="button"
+        class="btn btn-secondary"
+        [disabled]="currentPage() === totalPages()"
+        (click)="nextPage()">
+        Next →
+      </button>
+    </div>
+
+    <div class="text-muted text-center mt-4" style="font-size: 13px;">
+      Page {{ currentPage() }} of {{ totalPages() }}
+      &nbsp;•&nbsp;
+      Showing {{ pagedResults().length }} of {{ filteredResults().length }}
+      @if (filteredResults().length !== allResults().length) {
+        (filtered from {{ allResults().length }} total)
+      }
+    </div>
+  }
+
+</main>
+
+<app-footer text="© Company HR  •  Scores written by Claude (LLM rubric scoring)"></app-footer>
+
+<!-- Invite modal -->
+@if (inviteOpen()) {
+  <div class="modal-backdrop show" (click)="closeInvite()">
+    <div class="modal" (click)="$event.stopPropagation()">
+      <h2>Invite a Candidate</h2>
+      <p class="subtitle">Generates a one-time URL valid for 24 hours.</p>
+
+      @if (!inviteResult()) {
+        <div class="field">
+          <label for="candName">Candidate Name</label>
+          <input
+            type="text"
+            id="candName"
+            required
+            [(ngModel)]="invName"
+            [disabled]="inviteSubmitting()">
+        </div>
+
+        <div class="field">
+          <label for="candEmail">Candidate Email</label>
+          <input
+            type="email"
+            id="candEmail"
+            required
+            [(ngModel)]="invEmail"
+            [disabled]="inviteSubmitting()">
+        </div>
+
+        <div class="field">
+          <label>Difficulty</label>
+          <div class="difficulty-radios">
+            <label>
+              <input
+                type="radio"
+                name="difficulty"
+                value="intermediate"
+                [(ngModel)]="invDifficulty">
+              <span>Intermediate</span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="difficulty"
+                value="expert"
+                [(ngModel)]="invDifficulty">
+              <span>Expert</span>
+            </label>
+          </div>
+        </div>
+
+        @if (inviteError()) {
+          <div class="field-error">{{ inviteError() }}</div>
+        }
+
+        <div class="flex-row">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            [disabled]="inviteSubmitting()"
+            (click)="closeInvite()">Cancel</button>
+          <span class="spacer"></span>
+          <button
+            type="button"
+            class="btn btn-primary"
+            [disabled]="inviteSubmitting()"
+            (click)="submitInvite()">
+            @if (inviteSubmitting()) { Generating… } @else { GENERATE LINK  → }
+          </button>
+        </div>
+      } @else {
+        <div class="invite-result">
+          <strong>Invitation created.</strong><br>
+          <span style="color: var(--text-muted); font-size: 13px;">
+            Send BOTH the URL and the access code to <em>{{ inviteResult()!.candidate_email }}</em>:
+          </span>
+
+          <div style="margin-top: 12px;">
+            <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">
+              Test URL
+            </div>
+            <span style="user-select: all; word-break: break-all; font-family: var(--font-mono); font-size: 13px;">
+              {{ inviteResult()!.exam_url }}
+            </span>
+          </div>
+
+          <div style="margin-top: 16px;">
+            <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">
+              6-digit access code
+            </div>
+            <span style="user-select: all; font-family: var(--font-mono); font-size: 24px; font-weight: 600; letter-spacing: 6px; color: var(--orange);">
+              {{ inviteResult()!.access_code }}
+            </span>
+          </div>
+
+          <small style="display: block; margin-top: 16px;">
+            Expires: {{ formatSubmittedDateTime(inviteResult()!.expires_at) }}
+          </small>
+
+          <div class="flex-row" style="margin-top: 12px; gap: 8px;">
+            <button type="button" class="btn btn-secondary" (click)="copyInviteUrl()">
+              @if (inviteCopied()) { Copied URL ✓ } @else { Copy URL }
+            </button>
+          </div>
+        </div>
+
+        <div class="flex-row mt-4">
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-primary" (click)="closeInvite()">Close</button>
+        </div>
+      }
+    </div>
+  </div>
+}
