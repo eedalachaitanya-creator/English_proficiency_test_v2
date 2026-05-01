@@ -41,6 +41,16 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def generate_access_code() -> str:
+    """
+    6-digit numeric code candidate must enter after clicking the URL.
+    Uses secrets.choice (not random.randint) — same cryptographic generator
+    as token generation, so codes can't be predicted from observing prior ones.
+    Returned as a zero-padded string so leading zeros aren't lost (e.g. "048273").
+    """
+    return "".join(secrets.choice("0123456789") for _ in range(6))
+
+
 # ------------------------------------------------------------------
 # Session dependency
 # ------------------------------------------------------------------

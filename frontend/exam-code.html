@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enter Access Code — English Proficiency Test</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    /* Code entry — large monospace input centered on the page */
+    .code-input {
+      width: 100%;
+      padding: 18px 14px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      font-family: var(--font-mono);
+      font-size: 28px;
+      letter-spacing: 8px;
+      text-align: center;
+      background: var(--white);
+      color: var(--navy);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .code-input:focus {
+      outline: none;
+      border-color: var(--orange);
+      box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.15);
+    }
+    .code-input.error {
+      border-color: var(--red);
+      animation: shake 0.3s;
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-6px); }
+      75% { transform: translateX(6px); }
+    }
+    .attempts-warning {
+      color: var(--red);
+      font-size: 13px;
+      margin-top: 8px;
+      text-align: center;
+      min-height: 20px;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="brand">English Proficiency Test</div>
+    <div class="meta">Access verification</div>
+  </header>
+
+  <main class="page-narrow">
+    <div class="card">
+      <h1>Enter your access code</h1>
+      <p class="subtitle">
+        Your HR manager sent you a 6-digit access code along with this URL.
+        Enter it below to start your test.
+      </p>
+
+      <form id="codeForm" novalidate>
+        <div class="field">
+          <label for="codeInput">6-digit code</label>
+          <input type="text"
+                 id="codeInput"
+                 class="code-input"
+                 inputmode="numeric"
+                 pattern="[0-9]*"
+                 maxlength="6"
+                 autocomplete="off"
+                 autofocus>
+          <div class="attempts-warning" id="errorMsg"></div>
+        </div>
+
+        <button type="submit" id="submitBtn" class="btn btn-primary btn-block" disabled>
+          VERIFY &amp; START TEST  →
+        </button>
+      </form>
+
+      <p class="text-muted text-center mt-6" style="font-size: 12px;">
+        If you don't have your code, check your invitation email — it was sent
+        with this URL. If you can't find it, contact your HR manager.
+      </p>
+    </div>
+  </main>
+
+  <footer class="footer">© Company HR  •  Privacy  •  Support</footer>
+
+  <script src="js/common.js"></script>
+  <script src="js/exam-code.js"></script>
+</body>
+</html>

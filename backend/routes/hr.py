@@ -27,7 +27,7 @@ from schemas import (
     ScoreDetail,
     AudioRecordingPublic,
 )
-from auth import verify_password, generate_token, require_hr
+from auth import verify_password, generate_token, generate_access_code, require_hr
 
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
@@ -104,6 +104,7 @@ def create_invite(
         raise HTTPException(status_code=422, detail="candidate_name cannot be blank.")
 
     expires_at = _utcnow_naive() + timedelta(hours=INVITATION_TTL_HOURS)
+    access_code = generate_access_code()
 
     inv = Invitation(
         token=token,
@@ -112,6 +113,7 @@ def create_invite(
         difficulty=payload.difficulty,
         hr_admin_id=hr.id,
         expires_at=expires_at,
+        access_code=access_code,
     )
     db.add(inv)
     db.commit()
@@ -119,13 +121,65 @@ def create_invite(
 
     exam_url = f"{APP_BASE_URL}/exam/{token}"
 
-    # TODO Day 3: send email to inv.candidate_email with exam_url here.
-    print(f"[invite] {hr.email} invited {inv.candidate_email} ({inv.difficulty}) -> {exam_url}")
+    # TODO Day 3: send email to inv.candidate_email with exam_url + access_code here.
+    # For now, HR copy/pastes both from the dashboard popup.
+    print(
+        f"[invite] {hr.email} invited {inv.candidate_email} ({inv.difficulty}) "
+        f"-> {exam_url}  code={access_code}"
+    )
 
     return InviteCreateResponse(
         invitation_id=inv.id,
         token=token,
         exam_url=exam_url,
+        access_code=access_code,
+        expires_at=inv.expires_at,
+    )
+
+
+# ------------------------------------------------------------------
+# Regenerate access code (after lockout)
+# ------------------------------------------------------------------
+@router.post("/invite/{invitation_id}/regenerate-code", response_model=InviteCreateResponse)
+def regenerate_code(
+    invitation_id: int,
+    hr: HRAdmin = Depends(require_hr),
+    db: Session = Depends(get_db),
+):
+    """
+    HR can regenerate a candidate's access code, e.g. after they got locked out
+    from too many wrong attempts. Resets the failed_code_attempts counter and
+    clears the code_locked flag.
+
+    Tenancy check: 404 (not 403) if the invitation belongs to a different HR.
+    """
+    inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
+    if not inv or inv.hr_admin_id != hr.id:
+        raise HTTPException(status_code=404, detail="Invitation not found.")
+
+    if inv.submitted_at is not None:
+        raise HTTPException(
+            status_code=410,
+            detail="This test has already been submitted. Cannot regenerate code.",
+        )
+
+    inv.access_code = generate_access_code()
+    inv.failed_code_attempts = 0
+    inv.code_locked = False
+    db.commit()
+    db.refresh(inv)
+
+    exam_url = f"{APP_BASE_URL}/exam/{inv.token}"
+    print(
+        f"[regenerate] {hr.email} regenerated code for {inv.candidate_email} "
+        f"-> code={inv.access_code}"
+    )
+
+    return InviteCreateResponse(
+        invitation_id=inv.id,
+        token=inv.token,
+        exam_url=exam_url,
+        access_code=inv.access_code,
         expires_at=inv.expires_at,
     )
 
@@ -239,6 +293,8 @@ def result_detail(
         total_score=s.total_score if s else None,
         rating=s.rating if s else None,
         ai_feedback=s.ai_feedback if s else None,
+        tab_switches_count=inv.tab_switches_count or 0,
+        tab_switches_total_seconds=inv.tab_switches_total_seconds or 0,
         audio_recordings=audio_pubs,
     )
 

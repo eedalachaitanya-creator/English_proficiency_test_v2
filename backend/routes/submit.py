@@ -53,6 +53,8 @@ async def submit_test(
     answers: str = Form(...),
     topic_ids: str = Form("[]"),
     essay_text: str = Form(""),         # the candidate's written essay
+    tab_switches_count: str = Form("0"),         # number of tab switches during test
+    tab_switches_total_seconds: str = Form("0"), # cumulative seconds away
     audio_0: UploadFile | None = File(None),
     audio_1: UploadFile | None = File(None),
     audio_2: UploadFile | None = File(None),
@@ -83,6 +85,24 @@ async def submit_test(
     if not isinstance(topic_id_list, list):
         raise HTTPException(422, "topic_ids must be a JSON array.")
 
+    # ---- 2b. Parse tab-switching telemetry early ----
+    # We need is_terminated up front because it loosens validation rules
+    # below (terminated submissions accept empty essays, partial audio, etc.).
+    # Untrusted client input — clamp to safe ranges. Cap seconds at 24h
+    # so a malicious client can't poison the row with absurd values.
+    try:
+        ts_count = max(0, int(tab_switches_count))
+    except (TypeError, ValueError):
+        ts_count = 0
+    try:
+        ts_seconds = max(0, min(int(tab_switches_total_seconds), 86_400))
+    except (TypeError, ValueError):
+        ts_seconds = 0
+    # 3 strikes = test was force-terminated by the frontend tracker.
+    # The frontend only triggers force-submit when this threshold is reached,
+    # so seeing >=3 here means partial-data submission is expected.
+    is_terminated = ts_count >= 3
+
     assigned_q_ids = set(inv.assigned_question_ids or [])
     assigned_t_ids = set(inv.assigned_topic_ids or [])
 
@@ -108,10 +128,14 @@ async def submit_test(
     # ---- 3b. Save the writing essay ----
     # The candidate's frontend enforces the soft word range, but the server is the
     # security boundary — a non-browser client (curl/Postman) could bypass the UI.
-    # If a writing topic was assigned, an essay is REQUIRED at submit time.
+    # If a writing topic was assigned, an essay is REQUIRED at submit time —
+    # UNLESS this is a force-terminated submission (3+ tab switches), in which
+    # case we accept whatever the candidate had typed (including nothing) so
+    # we don't lose all their data over a strict validation.
     essay_clean = (essay_text or "").strip()
     word_count = _word_count(essay_clean)
-    if inv.assigned_writing_topic_id:
+    if inv.assigned_writing_topic_id and not is_terminated:
+        # Normal submission — enforce minimum length
         if word_count < HARD_FLOOR_WORDS:
             raise HTTPException(
                 422,
@@ -131,6 +155,19 @@ async def submit_test(
             essay_text=essay_clean,
             word_count=word_count,
         ))
+    elif inv.assigned_writing_topic_id and is_terminated and word_count > 0:
+        # Terminated mid-test, but they had typed some essay text. Save it
+        # (even if it's under HARD_FLOOR_WORDS) so HR can review what they had.
+        # Skip the upper-bound check too — if the data is here, just store it.
+        db.add(WritingResponse(
+            invitation_id=inv.id,
+            topic_id=inv.assigned_writing_topic_id,
+            essay_text=essay_clean,
+            word_count=word_count,
+        ))
+    # If terminated AND no essay text: don't create a WritingResponse row at all.
+    # The candidate was terminated before they wrote anything. The dashboard
+    # will show "no essay" and the tab_switches_count tells HR why.
 
     # ---- 4. Save audio files to disk + insert AudioRecording rows ----
     print("\n" + "=" * 70, flush=True)
@@ -189,6 +226,23 @@ async def submit_test(
     print("=" * 70, flush=True)
     print(f"[SUBMIT] All audio files saved. Starting scoring...", flush=True)
     print("=" * 70 + "\n", flush=True)
+
+    # ---- 4b. Save tab-switching telemetry to the invitation row ----
+    # Values were already parsed and clamped at the top of this function
+    # (we needed them early to set the is_terminated flag). Now just store.
+    inv.tab_switches_count = ts_count
+    inv.tab_switches_total_seconds = ts_seconds
+    if is_terminated:
+        print(
+            f"[SUBMIT] *** TERMINATED *** Tab switches: count={ts_count}, "
+            f"total_seconds={ts_seconds}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[SUBMIT] Tab switches: count={ts_count}, total_seconds={ts_seconds}",
+            flush=True,
+        )
 
     # ---- 5. Mark submitted (single-use enforcement) ----
     inv.submitted_at = _utcnow_naive()
