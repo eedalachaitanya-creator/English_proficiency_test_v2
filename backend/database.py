@@ -35,7 +35,18 @@ def get_db():
 
 
 def init_db():
-    """Create all tables registered on Base.metadata. Idempotent."""
+    """
+    Create all tables registered on Base.metadata. Idempotent.
+
+    NOTE: This is a fresh-DB convenience for local dev. It does NOT alter
+    existing tables, so it can't apply schema changes after the first run.
+    For all schema changes, use Alembic:
+        alembic revision --autogenerate -m "describe change"
+        alembic upgrade head
+    The app calls this on startup so a brand-new SQLite/Postgres DB still
+    boots without manually running Alembic, but Alembic is the source of
+    truth for any schema change after the initial creation.
+    """
     # Import models so SQLAlchemy registers them on Base before create_all.
     import models  # noqa: F401
     Base.metadata.create_all(bind=engine)

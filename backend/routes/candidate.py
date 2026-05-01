@@ -19,22 +19,24 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Invitation, Passage, Question, SpeakingTopic
+from models import Invitation, Passage, Question, SpeakingTopic, WritingTopic
 from schemas import (
     TestContent,
     PassagePublic,
     QuestionPublic,
     SpeakingTopicPublic,
+    WritingTopicPublic,
 )
 
 
 router = APIRouter(tags=["candidate"])
 
-# v1 (Option C) constants — match the locked scope.
+# v1 constants — match the locked scope.
 WRITTEN_QUESTIONS_PER_TEST = 15
 SPEAKING_QUESTIONS_PER_TEST = 3
-WRITTEN_DURATION_SECONDS = 30 * 60   # 30 minutes
-SPEAKING_DURATION_SECONDS = 10 * 60  # 10 minutes for 3 questions (~3 min each + buffer)
+WRITTEN_DURATION_SECONDS = 30 * 60    # 30 minutes for the reading MCQs
+WRITING_DURATION_SECONDS = 20 * 60    # 20 minutes for the essay
+SPEAKING_DURATION_SECONDS = 10 * 60   # 10 minutes for 3 speaking prompts
 
 
 def _utcnow_naive() -> datetime:
@@ -123,6 +125,16 @@ def _assign_content(inv: Invitation, db: Session):
     selected_topics = random.sample(topics, SPEAKING_QUESTIONS_PER_TEST)
     inv.assigned_topic_ids = [t.id for t in selected_topics]
 
+    # 5) Writing topic (one essay prompt)
+    writing_topics = db.query(WritingTopic).filter(WritingTopic.difficulty == inv.difficulty).all()
+    if not writing_topics:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No writing prompts seeded for difficulty='{inv.difficulty}'. "
+                   f"Run `alembic upgrade head` (if needed) and then `python3 seed.py`.",
+        )
+    inv.assigned_writing_topic_id = random.choice(writing_topics).id
+
 
 # ------------------------------------------------------------------
 # Routes
@@ -196,10 +208,24 @@ def get_test_content(request: Request, db: Session = Depends(get_db)):
     }
     topics_ordered = [tmap[tid] for tid in inv.assigned_topic_ids if tid in tmap]
 
+    # Writing topic (single, may be None for older invitations created before the
+    # writing section was added — defensive guard so we don't crash for those).
+    writing_topic = (
+        db.query(WritingTopic).filter(WritingTopic.id == inv.assigned_writing_topic_id).first()
+        if inv.assigned_writing_topic_id else None
+    )
+    if writing_topic is None:
+        raise HTTPException(
+            status_code=500,
+            detail="No writing topic assigned. This invitation pre-dates the writing section. "
+                   "Generate a fresh invitation.",
+        )
+
     return TestContent(
         candidate_name=inv.candidate_name,
         difficulty=inv.difficulty,
         duration_written_seconds=WRITTEN_DURATION_SECONDS,
+        duration_writing_seconds=WRITING_DURATION_SECONDS,
         duration_speaking_seconds=SPEAKING_DURATION_SECONDS,
         passage=PassagePublic(id=passage.id, title=passage.title, body=passage.body),
         questions=[
@@ -211,6 +237,12 @@ def get_test_content(request: Request, db: Session = Depends(get_db)):
             )
             for q in questions_ordered
         ],
+        writing_topic=WritingTopicPublic(
+            id=writing_topic.id,
+            prompt_text=writing_topic.prompt_text,
+            min_words=writing_topic.min_words,
+            max_words=writing_topic.max_words,
+        ),
         speaking_topics=[
             SpeakingTopicPublic(id=t.id, prompt_text=t.prompt_text)
             for t in topics_ordered

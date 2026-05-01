@@ -123,6 +123,7 @@ class Invitation(Base):
     passage_id = Column(Integer, ForeignKey("passages.id"), nullable=True)
     assigned_question_ids = Column(JSON, nullable=True)   # list[int] — exact 15 questions chosen
     assigned_topic_ids = Column(JSON, nullable=True)      # list[int] — exact 3 speaking topics chosen
+    assigned_writing_topic_id = Column(Integer, ForeignKey("writing_topics.id"), nullable=True)
 
     # Lifecycle
     created_at = Column(DateTime, default=_utcnow, nullable=False)
@@ -132,8 +133,10 @@ class Invitation(Base):
 
     hr = relationship("HRAdmin", back_populates="invitations")
     passage = relationship("Passage")
+    writing_topic = relationship("WritingTopic")
     mcq_answers = relationship("MCQAnswer", back_populates="invitation", cascade="all, delete-orphan")
     audio_recordings = relationship("AudioRecording", back_populates="invitation", cascade="all, delete-orphan")
+    writing_response = relationship("WritingResponse", back_populates="invitation", uselist=False, cascade="all, delete-orphan")
     score = relationship("Score", back_populates="invitation", uselist=False, cascade="all, delete-orphan")
 
 
@@ -170,6 +173,37 @@ class AudioRecording(Base):
 
 
 # ------------------------------------------------------------------
+# Writing content + responses
+# ------------------------------------------------------------------
+class WritingTopic(Base):
+    """An essay prompt. Each candidate gets one assigned at test start."""
+    __tablename__ = "writing_topics"
+
+    id = Column(Integer, primary_key=True)
+    prompt_text = Column(Text, nullable=False)
+    difficulty = Column(String(20), nullable=False, index=True)  # intermediate | expert
+    min_words = Column(Integer, nullable=False, default=200)
+    max_words = Column(Integer, nullable=False, default=300)
+    category = Column(String(100))
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+
+
+class WritingResponse(Base):
+    """The candidate's essay text. One row per invitation (uselist=False on Invitation)."""
+    __tablename__ = "writing_responses"
+
+    id = Column(Integer, primary_key=True)
+    invitation_id = Column(Integer, ForeignKey("invitations.id"), unique=True, nullable=False, index=True)
+    topic_id = Column(Integer, ForeignKey("writing_topics.id"), nullable=False)
+    essay_text = Column(Text, nullable=False)
+    word_count = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+
+    invitation = relationship("Invitation", back_populates="writing_response")
+    topic = relationship("WritingTopic")
+
+
+# ------------------------------------------------------------------
 # Scores
 # ------------------------------------------------------------------
 class Score(Base):
@@ -186,12 +220,16 @@ class Score(Base):
     reading_correct = Column(Integer)
     reading_total = Column(Integer)
 
+    # Writing — JSON breakdown per rubric dimension
+    writing_breakdown = Column(JSON)     # {"task_response": 22, "grammar": 21, "vocabulary": 20, "coherence": 18}
+    writing_score = Column(Integer)      # 0..100, normalized
+
     # Speaking — JSON breakdown per rubric dimension
     speaking_breakdown = Column(JSON)    # {"fluency": 22, "pronunciation": 18, "grammar": 17, "vocabulary": 13, "coherence": 17}
     speaking_score = Column(Integer)     # 0..100, normalized
 
-    # Combined
-    total_score = Column(Integer)        # weighted average of reading + speaking, 0..100
+    # Combined — weighted: 25% reading + 35% writing + 40% speaking
+    total_score = Column(Integer)        # 0..100
     rating = Column(String(30))          # 'recommended' | 'borderline' | 'not_recommended'
     ai_feedback = Column(Text)           # paragraph from Claude
 

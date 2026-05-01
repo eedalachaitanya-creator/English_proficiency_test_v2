@@ -483,6 +483,11 @@ table.results tbody tr:last-child td { border-bottom: none; }
   margin-bottom: 20px;
   white-space: pre-wrap;   /* preserve \n in messages — used by submission-failure alert */
 }
+
+/* HR detail panel — AI feedback combines writing + speaking paragraphs joined
+   with \n\n; preserve those breaks so HR sees two readable paragraphs, not a
+   single run-on line. */
+#feedback { white-space: pre-wrap; }
 @keyframes fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }

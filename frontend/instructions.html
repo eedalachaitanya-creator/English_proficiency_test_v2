@@ -15,23 +15,34 @@
 
   <main class="page">
     <h1 id="welcomeTitle">Test Instructions</h1>
-    <p class="subtitle" id="subtitleText">Read carefully before you begin. The test has 2 sections and is auto-timed.</p>
+    <p class="subtitle" id="subtitleText">Read carefully before you begin. The test has 3 sections and is auto-timed.</p>
 
-    <div class="reading-grid">
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;">
 
       <div class="card">
-        <div class="card-header">SECTION 1  •  WRITTEN</div>
+        <div class="card-header">SECTION 1  •  READING</div>
         <h3 style="color: var(--orange);"><span id="writtenMins">30</span> minutes</h3>
         <ul style="margin-top: 12px; padding-left: 20px; line-height: 1.8;">
-          <li>15 multiple-choice questions covering grammar, reading comprehension, and vocabulary.</li>
-          <li>One reading passage on the left; questions about it on the right.</li>
-          <li>Other questions stand alone (grammar, fill-in-blank, synonyms).</li>
-          <li>The timer is visible at the top-right of the screen.</li>
+          <li>15 multiple-choice questions.</li>
+          <li>Mix of grammar, reading comprehension, vocabulary, fill-in-the-blank.</li>
+          <li>One reading passage with questions about it.</li>
+          <li>Timer visible at the top-right.</li>
         </ul>
       </div>
 
       <div class="card">
-        <div class="card-header">SECTION 2  •  SPEAKING</div>
+        <div class="card-header">SECTION 2  •  WRITING</div>
+        <h3 style="color: var(--orange);"><span id="writingMins">20</span> minutes</h3>
+        <ul style="margin-top: 12px; padding-left: 20px; line-height: 1.8;">
+          <li>One essay prompt on a real-world topic.</li>
+          <li>Word range shown on screen (200–300 or 300–450 by level).</li>
+          <li>Live word counter as you type.</li>
+          <li>Auto-saves every keystroke.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">SECTION 3  •  SPEAKING</div>
         <h3 style="color: var(--orange);">up to <span id="speakingMins">10</span> minutes</h3>
         <ul style="margin-top: 12px; padding-left: 20px; line-height: 1.8;">
           <li>3 impromptu speaking prompts.</li>
@@ -72,6 +83,8 @@
         `Welcome, ${content.candidate_name}`;
       document.getElementById('writtenMins').textContent =
         Math.round(content.duration_written_seconds / 60);
+      document.getElementById('writingMins').textContent =
+        Math.round((content.duration_writing_seconds || 1200) / 60);
       document.getElementById('speakingMins').textContent =
         Math.round(content.duration_speaking_seconds / 60);
     })();

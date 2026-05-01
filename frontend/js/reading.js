@@ -84,8 +84,10 @@
   }
   const initialRemaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
   if (initialRemaining === 0) {
+    // Reading time is up — advance to the *next* section (Writing), not Speaking.
+    // This must match onExpire below so all three exit points behave consistently.
     Store.set('readingTimeUp', true);
-    window.location.href = 'speaking.html';
+    window.location.href = 'writing.html';
     return;
   }
   const ticker = startCountdown(initialRemaining,
@@ -96,7 +98,7 @@
     },
     () => {
       Store.set('readingTimeUp', true);
-      window.location.href = 'speaking.html';
+      window.location.href = 'writing.html';
     }
   );
 
@@ -113,13 +115,13 @@
     const unanswered = content.questions.filter(q => stored[q.id] === undefined);
     if (unanswered.length > 0) {
       const ok = await Modal.confirm(
-        `You have ${unanswered.length} unanswered question${unanswered.length === 1 ? '' : 's'}. Continue to the Speaking section?`,
+        `You have ${unanswered.length} unanswered question${unanswered.length === 1 ? '' : 's'}. Continue to the Writing section?`,
         { okText: 'Continue', cancelText: 'Keep Answering', dangerous: true }
       );
       if (!ok) return;
     }
     ticker.stop();
-    window.location.href = 'speaking.html';
+    window.location.href = 'writing.html';
   });
 
   window.addEventListener('beforeunload', e => {

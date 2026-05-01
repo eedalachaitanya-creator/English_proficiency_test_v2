@@ -5,9 +5,10 @@ uvicorn[standard]>=0.27
 # Database
 sqlalchemy>=2.0
 psycopg2-binary>=2.9       # for PostgreSQL on Render (Day 3 deploy)
+alembic>=1.13              # schema migrations — single source of truth is models.py
 
 # Validation & settings
-pydantic[email]>=2.5
+pydantic[email]>=2.5       # [email] pulls in email-validator, required by EmailStr
 pydantic-settings>=2.1
 python-dotenv>=1.0
 
@@ -18,9 +19,9 @@ itsdangerous>=2.1          # signed session cookies (used by SessionMiddleware)
 # Multipart / form uploads (audio files on Day 2)
 python-multipart>=0.0.7
 
-# AI providers (Day 2 — installed now to lock versions)
-anthropic>=0.39
-openai>=1.40
+# AI providers — speaking evaluation pipeline
+openai>=1.40                         # Whisper transcription + GPT-4o grading
+azure-cognitiveservices-speech>=1.40 # Pronunciation assessment
 
 # Email (Day 3)
 aiosmtplib>=3.0

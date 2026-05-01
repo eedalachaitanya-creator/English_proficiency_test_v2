@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, File, Form, Uplo
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Invitation, MCQAnswer, AudioRecording
+from models import Invitation, MCQAnswer, AudioRecording, WritingResponse, WritingTopic
 from schemas import SubmitResponse
 from scoring import score_invitation
 
@@ -39,11 +39,20 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+HARD_FLOOR_WORDS = 50  # essays shorter than this are rejected as not-meaningful
+
+
+def _word_count(text: str) -> int:
+    """Crude but consistent word counter — splits on whitespace, ignores empties."""
+    return len([w for w in text.strip().split() if w])
+
+
 @router.post("/api/submit", response_model=SubmitResponse)
 async def submit_test(
     request: Request,
     answers: str = Form(...),
     topic_ids: str = Form("[]"),
+    essay_text: str = Form(""),         # the candidate's written essay
     audio_0: UploadFile | None = File(None),
     audio_1: UploadFile | None = File(None),
     audio_2: UploadFile | None = File(None),
@@ -96,30 +105,78 @@ async def submit_test(
             selected_option=sel,
         ))
 
+    # ---- 3b. Save the writing essay ----
+    # The candidate's frontend enforces the soft word range, but the server is the
+    # security boundary — a non-browser client (curl/Postman) could bypass the UI.
+    # If a writing topic was assigned, an essay is REQUIRED at submit time.
+    essay_clean = (essay_text or "").strip()
+    word_count = _word_count(essay_clean)
+    if inv.assigned_writing_topic_id:
+        if word_count < HARD_FLOOR_WORDS:
+            raise HTTPException(
+                422,
+                f"Essay too short ({word_count} words). Minimum {HARD_FLOOR_WORDS} words required.",
+            )
+        topic = db.query(WritingTopic).filter(WritingTopic.id == inv.assigned_writing_topic_id).first()
+        # Hard ceiling: 2x the topic's max — prevents pasting books
+        if topic and word_count > topic.max_words * 2:
+            raise HTTPException(
+                422,
+                f"Essay too long ({word_count} words). Hard limit is {topic.max_words * 2}.",
+            )
+
+        db.add(WritingResponse(
+            invitation_id=inv.id,
+            topic_id=inv.assigned_writing_topic_id,
+            essay_text=essay_clean,
+            word_count=word_count,
+        ))
+
     # ---- 4. Save audio files to disk + insert AudioRecording rows ----
+    print("\n" + "=" * 70, flush=True)
+    print(f"[SUBMIT] Invitation {inv.id} ({inv.candidate_name}) submitting", flush=True)
+    print(f"[SUBMIT] Topic IDs received from frontend: {topic_id_list}", flush=True)
+    print(f"[SUBMIT] Assigned topic IDs for this candidate: {sorted(assigned_t_ids)}", flush=True)
+    print("=" * 70, flush=True)
+
     AUDIO_DIR.mkdir(exist_ok=True)
     audio_uploads = [audio_0, audio_1, audio_2]
     for i, audio in enumerate(audio_uploads):
         if audio is None:
+            print(f"[SUBMIT] Slot audio_{i}: empty (no file uploaded)", flush=True)
             continue
         if i >= len(topic_id_list):
+            print(f"[SUBMIT] Slot audio_{i}: skipped (no matching topic_id at index {i})", flush=True)
             continue
         topic_id = topic_id_list[i]
         try:
             topic_id = int(topic_id)
         except (TypeError, ValueError):
+            print(f"[SUBMIT] Slot audio_{i}: skipped (topic_id '{topic_id}' is not an int)", flush=True)
             continue
         if topic_id not in assigned_t_ids:
+            print(f"[SUBMIT] Slot audio_{i}: REJECTED (topic_id {topic_id} not assigned to this candidate)", flush=True)
             continue
 
         # Read into memory then write — fine for ≤2 MB audio files. For larger
         # files, stream chunk-by-chunk instead.
         contents = await audio.read()
         if not contents:
+            print(f"[SUBMIT] Slot audio_{i}: skipped (empty body)", flush=True)
             continue
         file_path = AUDIO_DIR / f"inv_{inv.id}_q{i}.webm"
         with open(file_path, "wb") as f:
             f.write(contents)
+
+        size_kb = len(contents) / 1024
+        print(
+            f"[SUBMIT] Slot audio_{i}: SAVED  "
+            f"topic_id={topic_id}  "
+            f"size={size_kb:.1f} KB  "
+            f"mime={audio.content_type or '(none)'}  "
+            f"path={file_path.name}",
+            flush=True,
+        )
 
         db.add(AudioRecording(
             invitation_id=inv.id,
@@ -128,6 +185,10 @@ async def submit_test(
             mime_type=audio.content_type or "audio/webm",
             duration_seconds=None,  # could probe via ffprobe; not critical for v1
         ))
+
+    print("=" * 70, flush=True)
+    print(f"[SUBMIT] All audio files saved. Starting scoring...", flush=True)
+    print("=" * 70 + "\n", flush=True)
 
     # ---- 5. Mark submitted (single-use enforcement) ----
     inv.submitted_at = _utcnow_naive()
