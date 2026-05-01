@@ -71,6 +71,24 @@ def me(hr: HRAdmin = Depends(require_hr)):
     """Returns the currently logged-in HR. Frontend uses this to confirm session is alive."""
     return HRLoginResponse(id=hr.id, name=hr.name, email=hr.email)
 
+@router.get("/session-status")
+def session_status(request: Request, db: Session = Depends(get_db)):
+    hr_id = request.session.get("hr_admin_id")
+    if not hr_id:
+        return {"logged_in": False, "user": None}
+
+    hr = db.query(HRAdmin).filter(HRAdmin.id == hr_id).first()
+    if not hr:
+        # Session has an hr_admin_id but the user was deleted from the DB.
+        # Clear the stale session and report logged-out.
+        request.session.clear()
+        return {"logged_in": False, "user": None}
+
+    return {
+        "logged_in": True,
+        "user": {"id": hr.id, "name": hr.name, "email": hr.email},
+    }
+
 
 # ------------------------------------------------------------------
 # Invitations

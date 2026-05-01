@@ -20,27 +20,53 @@ from starlette.middleware.sessions import SessionMiddleware
 # database.py calls load_dotenv() at import time, so env vars are populated by here.
 from database import init_db
 
+# DEV_SESSION_SECRET = "dev-only-secret-change-in-production"
+# SESSION_SECRET = os.getenv("SESSION_SECRET", DEV_SESSION_SECRET)
+# APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
+# FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+IS_PRODUCTION = ENVIRONMENT == "production"
+
 DEV_SESSION_SECRET = "dev-only-secret-change-in-production"
 SESSION_SECRET = os.getenv("SESSION_SECRET", DEV_SESSION_SECRET)
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-# Loud warning if running on the dev secret. Sessions are forgeable without a real secret.
-if SESSION_SECRET == DEV_SESSION_SECRET:
+# Production must have a real session secret — refuse to start otherwise.
+if IS_PRODUCTION and SESSION_SECRET == DEV_SESSION_SECRET:
+    raise RuntimeError(
+        "SESSION_SECRET environment variable must be set in production. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+    )
+
+# Loud warning if running on the dev secret in development. (In production we
+# already raised RuntimeError above, so this branch is dev-only.)
+if not IS_PRODUCTION and SESSION_SECRET == DEV_SESSION_SECRET:
     warnings.warn(
         "SESSION_SECRET is unset; using insecure dev default. "
-        "Set SESSION_SECRET in .env before deploying.",
+        "Set SESSION_SECRET in .env before deploying to production.",
         stacklevel=2,
     )
 
-# CORS: comma-separated list of allowed origins. Defaults cover same-origin dev + Vite.
-_DEFAULT_CORS = (
-    "http://localhost:8000,http://127.0.0.1:8000,"
-    "http://localhost:5173,http://127.0.0.1:5173"
-)
+if IS_PRODUCTION:
+    _DEFAULT_CORS = ""  # Force CORS_ALLOWED_ORIGINS env var to be set explicitly
+else:
+    _DEFAULT_CORS = (
+        "http://localhost:8000,http://127.0.0.1:8000,"
+        "http://localhost:4200,http://127.0.0.1:4200,"
+        "http://localhost:5173,http://127.0.0.1:5173"
+    )
+
 CORS_ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", _DEFAULT_CORS).split(",") if o.strip()
 ]
+
+if IS_PRODUCTION and not CORS_ALLOWED_ORIGINS:
+    raise RuntimeError(
+        "CORS_ALLOWED_ORIGINS environment variable must be set in production. "
+        "Example: CORS_ALLOWED_ORIGINS=https://app.yourcompany.com"
+    )
 
 
 # ------------------------------------------------------------------
@@ -70,7 +96,7 @@ app.add_middleware(
     secret_key=SESSION_SECRET,
     max_age=8 * 60 * 60,           # 8-hour HR session
     same_site="lax",
-    https_only=False,              # set True in production over HTTPS
+    https_only=IS_PRODUCTION,      # True in prod (HTTPS-only cookies); False in dev (allows http://localhost)
 )
 
 # Cookie-credentialed APIs require an explicit origin allowlist (no "*").
