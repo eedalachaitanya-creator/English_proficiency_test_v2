@@ -8,6 +8,16 @@
 
 <main class="page">
 
+  <!-- Toast: brief notification, auto-dismiss after 4s.
+       Used after a resend (success or failure). Green for success, red
+       for error — toastIsError signal drives the variant. -->
+  @if (toastVisible()) {
+    <div class="toast" [class.toast-error]="toastIsError()" role="status" aria-live="polite">
+      <span class="toast-icon">{{ toastIsError() ? '⚠' : '✓' }}</span>
+      <span>{{ toastMessage() }}</span>
+    </div>
+  }
+
   <!-- Page header: back link + candidate name -->
   <div class="flex-row mb-4" style="align-items: baseline;">
     <a routerLink="/dashboard" class="text-muted" style="text-decoration: none;">
@@ -25,22 +35,121 @@
       <strong>{{ loadError() }}</strong><br>
       <a routerLink="/dashboard">Return to dashboard</a>
     </div>
-  } @else if (detail()) {
+  } @else if (invitation()) {
     <h1 style="margin-top: 0;">
-      {{ detail()!.candidate_name }}
+      {{ invitation()!.candidate_name }}
     </h1>
-    @if (submissionReasonBadge(detail()!.submission_reason); as badge) {
+    @if (detail() && submissionReasonBadge(detail()!.submission_reason); as badge) {
       <div [style.color]="badge.color"
            style="margin: 6px 0 12px 0; font-size: 13px; font-weight: 600;">
         {{ badge.icon }}&nbsp;&nbsp;{{ badge.label }}
       </div>
     }
     <div class="text-muted" style="margin-bottom: 24px;">
-      {{ detail()!.candidate_email }} &nbsp;•&nbsp;
-      Difficulty: {{ detail()!.difficulty }} &nbsp;•&nbsp;
-      Submitted: {{ formatSubmittedDateTime(detail()!.submitted_at) }}
+      {{ invitation()!.candidate_email }} &nbsp;•&nbsp;
+      Difficulty: {{ invitation()!.difficulty }} &nbsp;•&nbsp;
+      Submitted: {{ formatSubmittedDateTime(invitation()!.submitted_at) }}
     </div>
 
+    <!-- =====================================================
+         INVITATION DETAILS card — visible only for pending
+         (not-yet-submitted) candidates. Lets HR retrieve the
+         URL, code, and email status, plus resend the email.
+         Hidden once the candidate submits — page goes straight
+         to score panels at that point.
+         ===================================================== -->
+    @if (showInvitationCard()) {
+      <div class="card mb-6">
+        <div class="card-header">INVITATION DETAILS</div>
+
+        <!-- Email status badge -->
+        @if (emailStatusBadge(); as badge) {
+          <div class="email-status-badge"
+               [style.color]="badge.color"
+               [style.background]="badge.bg">
+            {{ badge.label }}
+          </div>
+        }
+
+        <!-- Test URL row -->
+        <div style="margin-top: 16px;">
+          <div class="invitation-label">Test URL</div>
+          <div class="invitation-value-row">
+            <span class="text-mono"
+                  style="word-break: break-all; font-size: 13px; flex: 1;">
+              {{ invitation()!.exam_url }}
+            </span>
+            <button type="button" class="btn btn-secondary"
+                    style="white-space: nowrap;"
+                    (click)="copyUrl()">
+              @if (urlCopied()) { Copied ✓ } @else { Copy URL }
+            </button>
+          </div>
+        </div>
+
+        <!-- Access code row — hidden by default, reveal on click -->
+        <div style="margin-top: 16px;">
+          <div class="invitation-label">6-digit access code</div>
+          <div class="invitation-value-row">
+            @if (codeRevealed()) {
+              <span class="access-code-display">
+                {{ invitation()!.access_code }}
+              </span>
+            } @else {
+              <span class="access-code-display access-code-masked">
+                ••••••
+              </span>
+            }
+            <button type="button" class="btn btn-secondary"
+                    (click)="toggleCodeReveal()">
+              @if (codeRevealed()) { Hide } @else { Reveal code }
+            </button>
+            @if (codeRevealed()) {
+              <button type="button" class="btn btn-secondary"
+                      (click)="copyCode()">
+                @if (codeCopied()) { Copied ✓ } @else { Copy code }
+              </button>
+            }
+          </div>
+          @if (codeRevealed()) {
+            <div class="text-muted" style="font-size: 12px; margin-top: 6px;">
+              Treat this code as confidential — anyone with both the URL and code
+              can take the candidate's test.
+            </div>
+          }
+        </div>
+
+        <!-- Lifecycle timestamps + actions -->
+        <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
+          <div class="text-muted" style="font-size: 13px; margin-bottom: 4px;">
+            Expires: {{ formatSubmittedDateTime(invitation()!.expires_at) }}
+          </div>
+          <div class="text-muted" style="font-size: 13px; margin-bottom: 4px;">
+            @if (invitation()!.started_at) {
+              Started: {{ formatSubmittedDateTime(invitation()!.started_at) }}
+            } @else {
+              <em>Candidate has not started the test yet.</em>
+            }
+          </div>
+          @if (invitation()!.code_locked) {
+            <div style="color: #991b1b; font-size: 13px; margin: 8px 0;">
+              ⚠ Locked out — candidate failed {{ invitation()!.failed_code_attempts }}
+              code attempts. Use Regenerate Code from the dashboard if needed.
+            </div>
+          }
+
+          <div style="margin-top: 12px;">
+            <button type="button" class="btn btn-primary"
+                    [disabled]="resending()"
+                    (click)="resendEmail()">
+              @if (resending()) { Sending… } @else { Resend invitation email }
+            </button>
+          </div>
+        </div>
+      </div>
+    }
+
+    @if (detail()) {
     <!-- Reading + Speaking row -->
     <div class="reading-grid">
       <!-- Reading breakdown -->
@@ -158,6 +267,8 @@
         }
       </div>
     </div>
+    }
+    <!-- end of @if (detail()) wrapper around score panels -->
 
   }
 </main>

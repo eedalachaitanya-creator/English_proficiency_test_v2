@@ -8,6 +8,16 @@
 
 <main class="page">
 
+  <!-- Toast: brief success notification, auto-dismiss after 4s.
+       Shown after a successful invite send. The invite modal closes
+       and this slides in to confirm what just happened. -->
+  @if (toastVisible()) {
+    <div class="toast" role="status" aria-live="polite">
+      <span class="toast-icon">✓</span>
+      <span>{{ toastMessage() }}</span>
+    </div>
+  }
+
   @if (loadError()) {
     <div class="notice">
       <strong>Could not load results.</strong>
@@ -257,6 +267,21 @@
         </div>
       } @else {
         <div class="invite-result">
+          <!-- Email-failed banner. Shown ONLY when the modal stayed open
+               because email send failed (success closes the modal entirely).
+               The error message is set by submitInvite() when email_status
+               is not "sent" — gives HR the SMTP reason + copy-paste fallback. -->
+          @if (inviteError()) {
+            <div class="invite-failed-banner">
+              <strong>⚠ Email could not be sent.</strong>
+              <div style="margin-top: 4px; font-size: 13px;">{{ inviteError() }}</div>
+              <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted);">
+                The invitation is saved — copy the URL and access code below to
+                send the candidate manually (e.g. via Slack, WhatsApp, or another email).
+              </div>
+            </div>
+          }
+
           <strong>Invitation created.</strong><br>
           <span style="color: var(--text-muted); font-size: 13px;">
             Send BOTH the URL and the access code to <em>{{ inviteResult()!.candidate_email }}</em>:

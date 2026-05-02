@@ -119,9 +119,17 @@ export class ModalService {
       // and we resolve the Promise + tear the component down.
       const sub = componentRef.instance.closed.subscribe((result: boolean) => {
         sub.unsubscribe();
+        // Cleanup order matters here. componentRef.destroy() already removes
+        // the DOM element AND detaches the change-detection view internally.
+        // We previously called document.body.removeChild() AFTER destroy(),
+        // which threw NotFoundError ("not a child of this node") because the
+        // node was already gone. The error wasn't visible most of the time
+        // because callers didn't do anything async after `await modal.confirm`,
+        // but it broke any flow that did — the Promise never resolved.
+        //
+        // The fix: just call destroy(). It handles everything we need.
         this.appRef.detachView(componentRef.hostView);
         componentRef.destroy();
-        document.body.removeChild(componentRef.location.nativeElement);
         resolve(result);
       });
 

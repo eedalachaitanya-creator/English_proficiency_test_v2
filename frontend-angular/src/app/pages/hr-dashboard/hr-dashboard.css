@@ -20,3 +20,59 @@
   display: block;
   min-height: 100vh;
 }
+
+/* ----------------------------------------------------------------
+ * Toast notification — brief auto-dismissing banner at top of page.
+ * Used after a successful invite send (modal closes immediately, this
+ * confirms what happened). Animates in from above; fades out via
+ * Angular's @if removal after the 4s setTimeout in the component.
+ * ---------------------------------------------------------------- */
+.toast {
+  position: fixed;
+  top: 80px;                /* clears the topnav */
+  left: 50%;
+  transform: translateX(-50%);
+  background: #16a34a;       /* green-600 — matches "success" semantics */
+  color: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 1100;             /* above modals (which use z-index 1000) */
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  animation: toast-slide-in 220ms ease-out;
+  /* Ensure long emails don't overflow the viewport on narrow windows. */
+  max-width: 90vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-icon {
+  font-size: 16px;
+  font-weight: bold;
+}
+
+@keyframes toast-slide-in {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ----------------------------------------------------------------
+ * Email-failed banner inside the invite modal.
+ * Shown above the URL+code recovery view when SMTP send failed —
+ * explains why the modal didn't close and why HR needs to copy
+ * the URL/code manually.
+ * ---------------------------------------------------------------- */
+.invite-failed-banner {
+  background: #fef2f2;       /* red-50 */
+  border: 1px solid #fecaca; /* red-200 */
+  border-left: 4px solid #dc2626; /* red-600 — strong vertical accent */
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  color: #991b1b;            /* red-800 */
+}

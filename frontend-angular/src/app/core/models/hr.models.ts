@@ -37,13 +37,55 @@ export interface InviteCreateRequest {
 
 export interface InviteCreateResponse {
   invitation_id: number;
-  candidate_email: string;
+  token: string;
   candidate_name: string;
+  candidate_email: string;
   difficulty: 'intermediate' | 'expert';
   exam_url: string;
-  access_code: string;          // NEW — 6-digit passcode the candidate enters
+  access_code: string;          // 6-digit passcode the candidate enters
   expires_at: string;
-  email_sent?: boolean;
+  // Email delivery state — drives the dashboard's UX after Generate Link.
+  //   "sent"    → frontend shows success toast, closes modal
+  //   "failed"  → frontend keeps modal open, shows error + URL/code as fallback
+  //   "pending" → SMTP not configured (treat like "failed" in UI)
+  email_status: 'sent' | 'failed' | 'pending';
+  email_error: string | null;   // short reason if email_status === "failed"
+}
+
+/**
+ * Returned by GET /api/hr/invitation/:id/details — drives the
+ * "INVITATION DETAILS" card on the candidate-detail page for pending
+ * (not-yet-submitted) candidates. HR uses this view to recover the URL
+ * after the post-invite popup is dismissed, and to resend the email.
+ */
+export interface InvitationDetails {
+  invitation_id: number;
+  candidate_name: string;
+  candidate_email: string;
+  difficulty: string;
+
+  created_at: string;
+  expires_at: string;
+  started_at: string | null;
+  submitted_at: string | null;
+
+  exam_url: string;
+  access_code: string;
+
+  email_status: 'sent' | 'failed' | 'pending';
+  email_error: string | null;
+
+  code_locked: boolean;
+  failed_code_attempts: number;
+}
+
+/**
+ * Returned by POST /api/hr/invite/:id/resend-email. Just the email outcome
+ * — the candidate-detail page uses this to update the badge + show a toast.
+ */
+export interface ResendEmailResponse {
+  email_status: 'sent' | 'failed' | 'pending';
+  email_error: string | null;
 }
 
 // ===========================================================================

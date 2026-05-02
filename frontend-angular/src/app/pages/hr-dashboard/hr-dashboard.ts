@@ -99,6 +99,16 @@ export class HrDashboard implements OnInit {
   inviteResult = signal<InviteCreateResponse | null>(null);
   inviteCopied = signal(false);
 
+  // -------- Toast state --------
+  // Small notification banner shown briefly at the top of the page after
+  // a successful invitation (the modal closes immediately on success).
+  // We use a single signal pair instead of building a full Toast component
+  // because there's only one place we need this and the markup is small.
+  toastMessage = signal('');
+  toastVisible = signal(false);
+  /** Tracks the auto-dismiss timer so a second toast cancels the first. */
+  private toastTimer: ReturnType<typeof setTimeout> | null = null;
+
   // -------- Lifecycle --------
   ngOnInit(): void {
     this.auth.checkSession().subscribe({
@@ -249,9 +259,30 @@ export class HrDashboard implements OnInit {
     this.inviteSubmitting.set(true);
     this.api.post<InviteCreateResponse>('/api/hr/invite', body).subscribe({
       next: (res) => {
-        this.inviteResult.set(res);
         this.inviteSubmitting.set(false);
-        this.loadResults();
+
+        if (res.email_status === 'sent') {
+          // Happy path: email went out. Close the modal, show a brief toast,
+          // refresh the table so the new candidate row appears immediately.
+          this.closeInvite();
+          this.showToast(`Invitation sent to ${res.candidate_email}`);
+          this.loadResults();
+        } else {
+          // Failed (or 'pending' = SMTP not configured at all). Keep the
+          // modal open so HR can copy URL+code manually. inviteResult drives
+          // the "fallback" view in the template; inviteError shows the
+          // SMTP failure reason at the top of that view.
+          this.inviteResult.set(res);
+          this.inviteError.set(
+            res.email_error
+              ? `Email failed: ${res.email_error}`
+              : 'Email could not be sent. Copy the URL and code below to send manually.'
+          );
+          // Refresh table even on failure — the invitation IS in the database,
+          // just the email send failed. HR can see it in the list with a
+          // "failed" status badge (Step 2c will add that).
+          this.loadResults();
+        }
       },
       error: (err: ApiError) => {
         this.inviteSubmitting.set(false);
@@ -262,6 +293,23 @@ export class HrDashboard implements OnInit {
         this.inviteError.set(err.message || 'Could not create invitation.');
       },
     });
+  }
+
+  /**
+   * Show a brief notification at the top of the page. Auto-dismisses after
+   * 4 seconds. Calling again before dismiss replaces the previous message
+   * (and resets the timer).
+   */
+  private showToast(message: string): void {
+    if (this.toastTimer !== null) {
+      clearTimeout(this.toastTimer);
+    }
+    this.toastMessage.set(message);
+    this.toastVisible.set(true);
+    this.toastTimer = setTimeout(() => {
+      this.toastVisible.set(false);
+      this.toastTimer = null;
+    }, 4000);
   }
 
   copyInviteUrl(): void {
