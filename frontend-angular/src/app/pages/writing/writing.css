@@ -1,0 +1,148 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.timer-chip {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  background: var(--white);
+  color: var(--navy);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 1px;
+  transition: background 0.2s, color 0.2s;
+}
+.timer-chip.warning {
+  background: var(--orange);
+  color: var(--white);
+}
+.timer-chip.danger {
+  background: var(--red);
+  color: var(--white);
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.7; }
+}
+
+.writing-page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 32px 80px;
+}
+
+.section-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.section-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  text-align: center;
+}
+.section-header .link-button {
+  background: none;
+  border: none;
+  color: var(--navy);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  justify-self: start;
+}
+.section-header .link-button:hover {
+  text-decoration: underline;
+}
+
+/* Word counter on the right of the section header */
+.word-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono);
+  justify-self: end;
+}
+.word-counter .count {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--navy);
+  transition: color 0.2s;
+}
+.word-counter .range {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.word-counter.under .count { color: var(--red); }
+.word-counter.over .count  { color: var(--orange); }
+.word-counter.ok .count    { color: var(--green); }
+
+/* Prompt card at top */
+.prompt-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--orange);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.prompt-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.prompt-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+/* The big textarea */
+.essay-input {
+  width: 100%;
+  min-height: 380px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--white);
+  color: var(--text);
+  font-family: var(--font-sans, Arial, sans-serif);
+  font-size: 15px;
+  line-height: 1.7;
+  resize: vertical;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.essay-input:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.15);
+}
+
+.writing-footer {
+  margin-top: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+@media (max-width: 700px) {
+  .writing-page { padding: 16px; }
+  .section-header { grid-template-columns: 1fr; gap: 8px; }
+  .section-header .link-button,
+  .section-header h1,
+  .section-header .word-counter { justify-self: center; }
+  .essay-input { min-height: 280px; }
+}

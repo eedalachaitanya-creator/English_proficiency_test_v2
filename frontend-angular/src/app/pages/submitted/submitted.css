@@ -1,0 +1,57 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.check-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: var(--green);
+  color: var(--white);
+  font-size: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  color: var(--navy);
+}
+
+.ref-block {
+  margin: 28px auto 0;
+  padding: 20px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 420px;
+}
+
+.ref-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.ref-value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--navy);
+  letter-spacing: 1px;
+  user-select: all;
+}
+
+.ref-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  line-height: 1.5;
+}

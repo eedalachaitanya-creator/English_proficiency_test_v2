@@ -1,0 +1,82 @@
+<app-topnav title="English Proficiency Test  •  Section 1 of 3" [meta]="candidateMeta()">
+  <span
+    class="timer-chip"
+    [class.warning]="timerState() === 'warning'"
+    [class.danger]="timerState() === 'danger'">
+    {{ timerText() }}
+  </span>
+</app-topnav>
+
+@if (loadError()) {
+  <main class="page">
+    <div class="notice">
+      <strong>Could not load test content.</strong>
+      {{ loadError() }}
+    </div>
+  </main>
+} @else if (!content()) {
+  <main class="page">
+    <p class="text-muted">Loading test content…</p>
+  </main>
+} @else {
+  <main class="reading-page">
+
+    <div class="section-header">
+      <button type="button" class="link-button" (click)="onBack()">
+        ← Back
+      </button>
+      <h1>READING  •  {{ totalQuestions() }} questions</h1>
+      <div class="progress-summary">
+        <span id="answeredCount">{{ answeredCount() }} of {{ totalQuestions() }} answered</span>
+        <div class="progress-bar">
+          <div class="progress-fill" [style.width.%]="progressPct()"></div>
+        </div>
+        <span class="progress-label">{{ answeredCount() }} / {{ totalQuestions() }}</span>
+      </div>
+    </div>
+
+    <div class="reading-grid">
+      <!-- Passage column -->
+      <aside class="passage" id="passage">
+        <h2>{{ content()!.passage.title }}</h2>
+        @for (para of passageParagraphs(); track $index) {
+          <p>{{ para }}</p>
+        }
+      </aside>
+
+      <!-- Questions column -->
+      <section class="questions">
+        @for (q of content()!.questions; track trackQuestion($index, q); let qi = $index) {
+          <div class="question">
+            <div class="question-stem">
+              <span class="question-type">{{ labelForType(q.question_type) }}</span><br>
+              {{ qi + 1 }}. {{ q.stem }}
+            </div>
+
+            @for (opt of q.options; track $index; let oi = $index) {
+              <label
+                class="option"
+                [class.selected]="isSelected(q.id, oi)">
+                <input
+                  type="radio"
+                  [name]="'q_' + q.id"
+                  [value]="oi"
+                  [checked]="isSelected(q.id, oi)"
+                  (change)="selectAnswer(q.id, oi)">
+                <span><strong>{{ letter(oi) }}.</strong> {{ opt }}</span>
+              </label>
+            }
+          </div>
+        }
+      </section>
+    </div>
+
+    <div class="reading-footer">
+      <button type="button" class="btn btn-primary" (click)="onContinue()">
+        SUBMIT &amp; CONTINUE  →
+      </button>
+    </div>
+  </main>
+}
+
+<app-footer text="© Company HR  •  Privacy  •  Support"></app-footer>

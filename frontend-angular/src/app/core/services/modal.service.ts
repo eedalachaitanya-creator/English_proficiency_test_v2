@@ -34,15 +34,13 @@ export interface ModalOptions {
  *
  * Both methods:
  *   - Render a styled overlay (uses the .modal-backdrop / .modal CSS in
- *     styles.css — already pasted in File 1).
+ *     styles.css).
  *   - Block keyboard focus until dismissed.
  *   - Resolve true/false (confirm) or void (alert) when the user clicks
  *     OK/Cancel, presses Esc/Enter, or clicks the backdrop.
  *
  * Implementation: dynamically creates a ModalDialog component, attaches it
- * to the application root, and destroys it once the user responds. This is
- * the Angular-idiomatic way to do a global dialog without needing a
- * <modal-dialog> tag in every component template.
+ * to the application root, and destroys it once the user responds.
  */
 @Injectable({ providedIn: 'root' })
 export class ModalService {
@@ -115,13 +113,24 @@ export class ModalService {
       componentRef.setInput('dangerous', config.dangerous);
       componentRef.setInput('isAlert', config.isAlert);
 
-      // Wire up the component's "closed" event — this fires with true/false
-      // and we resolve the Promise + tear the component down.
+      // Wire up the component's "closed" event — fires with true/false.
       const sub = componentRef.instance.closed.subscribe((result: boolean) => {
         sub.unsubscribe();
+
+        // Cleanup order:
+        //   1. detachView removes the view from Angular's change detection tree
+        //   2. destroy() runs lifecycle hooks AND removes the root element
+        //      from the DOM (because attachView connected them)
+        //
+        // Earlier this method ALSO called
+        //   document.body.removeChild(componentRef.location.nativeElement)
+        // which threw NotFoundError because destroy() had already detached
+        // the node. The error short-circuited resolve(result) — every
+        // `await modal.confirm(...)` hung forever. That broke onBack and
+        // onFinish on the speaking page (and quietly broke other awaits too).
         this.appRef.detachView(componentRef.hostView);
         componentRef.destroy();
-        document.body.removeChild(componentRef.location.nativeElement);
+
         resolve(result);
       });
 

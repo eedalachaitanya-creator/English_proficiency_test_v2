@@ -1,0 +1,99 @@
+<app-topnav title="English Proficiency Test  •  Section 3 of 3" [meta]="candidateMeta()">
+  <span
+    class="timer-chip"
+    [class.warning]="timerState() === 'warning'"
+    [class.danger]="timerState() === 'danger'">
+    {{ timerText() }}
+  </span>
+</app-topnav>
+
+@if (loadError()) {
+  <main class="page">
+    <div class="notice">
+      <strong>Could not load test content.</strong>
+      {{ loadError() }}
+    </div>
+  </main>
+} @else if (!content() || topics().length === 0) {
+  <main class="page">
+    <p class="text-muted">Loading test content…</p>
+  </main>
+} @else {
+  <main class="speaking-page">
+
+    <div class="section-header">
+      <button type="button" class="link-button" (click)="onBack()">← Back to Writing</button>
+      <h1>SPEAKING  •  {{ topicHeading() }}</h1>
+      <span class="recordings-progress">
+        Recorded: {{ recordings().length }} of {{ topics().length }}
+      </span>
+    </div>
+
+    <div class="topic-card">
+      <div class="topic-label">{{ topicHeading() }}</div>
+      <p class="topic-text">{{ topicPrompt() }}</p>
+      <div class="topic-hint">
+        Speak for up to {{ timer.formatTime(perTopicSeconds()) }}.
+        Click START when ready.
+      </div>
+    </div>
+
+    <div class="recorder">
+      <div class="mic-icon" [class.pulse]="recording()">🎙</div>
+
+      <div class="waveform" [class.active]="recording()">
+        @for (h of waveformHeights(); track $index) {
+          <span [style.height.px]="4 + h * 56"></span>
+        }
+      </div>
+
+      <div
+        class="rec-status"
+        [class.idle]="recStatusKind() === 'idle'"
+        [class.recording]="recStatusKind() === 'recording'"
+        [class.saved]="recStatusKind() === 'saved'"
+        [class.error]="recStatusKind() === 'error'">
+        {{ recStatus() }}
+      </div>
+
+      <div class="rec-controls">
+        <button type="button" class="btn btn-danger" [disabled]="!canStart()" (click)="onStart()">
+          ●  START
+        </button>
+        <button type="button" class="btn btn-secondary" [disabled]="!canStop()" (click)="onStop()">
+          ■   STOP
+        </button>
+      </div>
+
+      @if (hasPlayback()) {
+        <audio #playbackEl controls class="playback" [src]="playbackUrl()"></audio>
+      }
+
+      @if (canNext()) {
+        <button type="button" class="btn btn-primary mt-4" (click)="onNextTopic()">
+          NEXT QUESTION ({{ currentTopicIdx() + 2 }} of {{ topics().length }})  →
+        </button>
+      }
+    </div>
+
+    <div class="notice mt-6">
+      <strong>Note:</strong>
+      Once you click <em>Finish &amp; Submit</em>, your recording is final.
+      You will <strong>not</strong> see your score — results go directly to HR.
+    </div>
+
+    <div class="speaking-footer mt-6">
+      <button type="button" class="btn btn-primary"
+              [disabled]="!canFinish() || submitting()"
+              (click)="onFinish()">
+        @if (submitting()) {
+          Submitting…
+        } @else {
+          FINISH &amp; SUBMIT TEST  →
+        }
+      </button>
+    </div>
+  </main>
+}
+
+<app-footer text="© Company HR  •  Privacy  •  Support"></app-footer>

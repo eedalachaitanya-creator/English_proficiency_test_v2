@@ -1,0 +1,69 @@
+<app-topnav title="English Proficiency Test  •  Section 2 of 3" [meta]="candidateMeta()">
+  <span
+    class="timer-chip"
+    [class.warning]="timerState() === 'warning'"
+    [class.danger]="timerState() === 'danger'">
+    {{ timerText() }}
+  </span>
+</app-topnav>
+
+@if (loadError()) {
+  <main class="page">
+    <div class="notice">
+      <strong>Could not load test content.</strong>
+      {{ loadError() }}
+    </div>
+  </main>
+} @else if (!content()) {
+  <main class="page">
+    <p class="text-muted">Loading test content…</p>
+  </main>
+} @else {
+  <main class="writing-page">
+
+    <div class="section-header">
+      <button type="button" class="link-button" (click)="onBack()">← Back to Reading</button>
+      <h1>WRITING  •  Essay</h1>
+      <div class="word-counter" [class.under]="wordCountStatus() === 'under'"
+                                 [class.over]="wordCountStatus() === 'over'"
+                                 [class.ok]="wordCountStatus() === 'ok'">
+        <span class="count">{{ wordCount() }}</span>
+        <span class="range">/ {{ minWords() }}–{{ maxWords() }} words</span>
+      </div>
+    </div>
+
+    <div class="prompt-card">
+      <div class="prompt-label">Topic</div>
+      <p class="prompt-text">{{ content()!.writing_topic.prompt_text }}</p>
+    </div>
+
+    <textarea
+      class="essay-input"
+      placeholder="Type your essay here. Aim for a balanced argument with a clear introduction, body, and conclusion."
+      [ngModel]="essay()"
+      (ngModelChange)="onEssayChange($event)"
+      autofocus>
+    </textarea>
+
+    <div class="writing-footer">
+      <span class="text-muted" style="font-size: 13px;">
+        @switch (wordCountStatus()) {
+          @case ('under') {
+            <span style="color: var(--red);">{{ minWords() - wordCount() }} more word{{ minWords() - wordCount() === 1 ? '' : 's' }} needed</span>
+          }
+          @case ('over') {
+            <span style="color: var(--orange);">{{ wordCount() - maxWords() }} word{{ wordCount() - maxWords() === 1 ? '' : 's' }} over recommended limit</span>
+          }
+          @case ('ok') {
+            <span style="color: var(--green);">✓ within recommended range</span>
+          }
+        }
+      </span>
+      <button type="button" class="btn btn-primary" (click)="onContinue()">
+        SUBMIT &amp; CONTINUE  →
+      </button>
+    </div>
+  </main>
+}
+
+<app-footer text="© Company HR  •  Privacy  •  Support"></app-footer>

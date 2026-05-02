@@ -2,21 +2,17 @@ import { Routes } from '@angular/router';
 import { hrAuthGuard } from './core/guards/hr-auth.guard';
 
 /**
- * Route table for the entire app.
- *
- * Built so far:
- *   /                          → redirects to /login
- *   /login                     → Login (HR sign-in)
+ * COMPLETE — all 10 steps wired:
+ *   /                          → /login
+ *   /login                     → Login (HR)
  *   /dashboard                 → HrDashboard (HR-guarded)
  *   /dashboard/candidate/:id   → CandidateDetail (HR-guarded)
- *   /exam/:token               → ExamEntry (passcode entry, public)
- *   /instructions              → Instructions (Step 6 — candidate-side)
- *
- * Coming in later steps:
- *   /reading       → section 1
- *   /writing       → section 2
- *   /speaking      → section 3
- *   /submitted     → confirmation page
+ *   /exam/:token               → ExamEntry (passcode)
+ *   /instructions              → Instructions
+ *   /reading                   → Reading (Step 7)
+ *   /writing                   → Writing (Step 8)
+ *   /speaking                  → Speaking (Step 9)
+ *   /submitted                 → Submitted (Step 10)
  */
 export const routes: Routes = [
   {
@@ -50,6 +46,26 @@ export const routes: Routes = [
     path: 'instructions',
     loadComponent: () =>
       import('./pages/instructions/instructions').then(m => m.Instructions),
+  },
+  {
+    path: 'reading',
+    loadComponent: () =>
+      import('./pages/reading/reading').then(m => m.Reading),
+  },
+  {
+    path: 'writing',
+    loadComponent: () =>
+      import('./pages/writing/writing').then(m => m.Writing),
+  },
+  {
+    path: 'speaking',
+    loadComponent: () =>
+      import('./pages/speaking/speaking').then(m => m.Speaking),
+  },
+  {
+    path: 'submitted',
+    loadComponent: () =>
+      import('./pages/submitted/submitted').then(m => m.Submitted),
   },
   {
     path: '**',

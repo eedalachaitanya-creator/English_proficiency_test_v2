@@ -1,0 +1,203 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.timer-chip {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  background: var(--white);
+  color: var(--navy);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 1px;
+  transition: background 0.2s, color 0.2s;
+}
+.timer-chip.warning {
+  background: var(--orange);
+  color: var(--white);
+}
+.timer-chip.danger {
+  background: var(--red);
+  color: var(--white);
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.7; }
+}
+
+.speaking-page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 32px 80px;
+}
+
+.section-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.section-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  text-align: center;
+}
+.section-header .link-button {
+  background: none;
+  border: none;
+  color: var(--navy);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  justify-self: start;
+}
+.section-header .link-button:hover {
+  text-decoration: underline;
+}
+.section-header .recordings-progress {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  justify-self: end;
+}
+
+.topic-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--orange);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.topic-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.topic-text {
+  margin: 0 0 8px;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--navy);
+  font-weight: 500;
+}
+.topic-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Recorder card */
+.recorder {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.mic-icon {
+  font-size: 64px;
+  line-height: 1;
+  filter: grayscale(0.3);
+  transition: filter 0.2s, transform 0.2s;
+}
+.mic-icon.pulse {
+  filter: none;
+  animation: micPulse 1.2s ease-in-out infinite;
+}
+@keyframes micPulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.08); }
+}
+
+/* Waveform — 40 bars */
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 64px;
+  width: 100%;
+  max-width: 520px;
+  justify-content: center;
+}
+.waveform span {
+  display: block;
+  width: 5px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  transition: height 0.05s linear, background 0.2s;
+}
+.waveform.active span {
+  background: var(--orange);
+}
+
+/* Status text */
+.rec-status {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+  text-align: center;
+}
+.rec-status.idle      { color: var(--text-muted); }
+.rec-status.recording { color: var(--red); font-weight: 600; }
+.rec-status.saved     { color: var(--green); }
+.rec-status.error     { color: var(--red); }
+
+/* Controls */
+.rec-controls {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+.rec-controls .btn {
+  min-width: 120px;
+}
+
+/* Playback */
+.playback {
+  width: 100%;
+  max-width: 520px;
+  margin-top: 8px;
+}
+
+.btn-danger {
+  background: var(--red);
+  color: var(--white);
+  border: none;
+}
+.btn-danger:disabled {
+  background: rgba(220, 53, 69, 0.4);
+  cursor: not-allowed;
+}
+.btn-danger:not(:disabled):hover {
+  filter: brightness(1.05);
+}
+
+.speaking-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 700px) {
+  .speaking-page { padding: 16px; }
+  .section-header { grid-template-columns: 1fr; gap: 8px; }
+  .section-header .link-button,
+  .section-header h1,
+  .section-header .recordings-progress { justify-self: center; }
+  .rec-controls { flex-direction: column; width: 100%; }
+}
