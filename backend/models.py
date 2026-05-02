@@ -148,6 +148,22 @@ class Invitation(Base):
     tab_switches_count = Column(Integer, default=0, nullable=False)
     tab_switches_total_seconds = Column(Integer, default=0, nullable=False)
 
+    # Email delivery tracking. We send an invitation email when HR clicks
+    # "Generate Link", and the dashboard surfaces the outcome so HR can act
+    # on failures (resend manually, fix the address, etc.).
+    #
+    # Three states:
+    #   "pending" — send not yet attempted (default for new rows)
+    #   "sent"    — SMTP accepted the message
+    #   "failed"  — SMTP send failed; email_error explains why
+    #
+    # Note: SMTP-accepted does NOT mean delivered to the recipient inbox.
+    # Bounces (mailbox doesn't exist, marked as spam, etc.) come back
+    # asynchronously to the SMTP_FROM_EMAIL inbox — we don't parse those
+    # here. HR checks the sender mailbox for bounce reports.
+    email_status = Column(String(20), default="pending", nullable=False)
+    email_error = Column(String(255), nullable=True)
+
     hr = relationship("HRAdmin", back_populates="invitations")
     passage = relationship("Passage")
     writing_topic = relationship("WritingTopic")
