@@ -130,6 +130,10 @@ class Invitation(Base):
     expires_at = Column(DateTime, nullable=False)         # created_at + 24h
     started_at = Column(DateTime, nullable=True)          # first time URL opened
     submitted_at = Column(DateTime, nullable=True)        # final submission
+    # Why the test was submitted. One of: candidate_finished | reading_timer_expired
+    # | writing_timer_expired | speaking_timer_expired | tab_switch_termination.
+    # Nullable for old rows submitted before this column existed.
+    submission_reason = Column(String(40), nullable=True)
 
     # Access code (6-digit) candidate must enter after clicking URL.
     # Lockout: 5 wrong attempts -> code_locked=True, HR must regenerate.
@@ -234,7 +238,7 @@ class Score(Base):
     reading_total = Column(Integer)
 
     # Writing — JSON breakdown per rubric dimension
-    writing_breakdown = Column(JSON)     # {"task_response": 22, "grammar": 21, "vocabulary": 20, "coherence": 18}
+    writing_breakdown = Column(JSON)     # {"grammar": 17, "vocabulary": 16, "comprehension": 18, "writing_quality": 17, "professional_communication": 16}
     writing_score = Column(Integer)      # 0..100, normalized
 
     # Speaking — JSON breakdown per rubric dimension

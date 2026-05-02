@@ -47,6 +47,33 @@ def _word_count(text: str) -> int:
     return len([w for w in text.strip().split() if w])
 
 
+# ------------------------------------------------------------------
+# submission_reason — recorded on Invitation to explain why the test ended.
+# ------------------------------------------------------------------
+_ALLOWED_SUBMISSION_REASONS = {
+    "candidate_finished",
+    "reading_timer_expired",
+    "writing_timer_expired",
+    "speaking_timer_expired",
+    "tab_switch_termination",
+}
+_DEFAULT_SUBMISSION_REASON = "candidate_finished"
+
+
+def _validate_submission_reason(value) -> str:
+    """
+    Map a form value to a canonical submission_reason. A bad value silently
+    coerces to the default — refusing a real test submission because the
+    frontend sent a typo would be much worse than recording the wrong reason.
+    """
+    if value is None:
+        return _DEFAULT_SUBMISSION_REASON
+    candidate = str(value).strip()
+    if candidate in _ALLOWED_SUBMISSION_REASONS:
+        return candidate
+    return _DEFAULT_SUBMISSION_REASON
+
+
 @router.post("/api/submit", response_model=SubmitResponse)
 async def submit_test(
     request: Request,
@@ -55,6 +82,7 @@ async def submit_test(
     essay_text: str = Form(""),         # the candidate's written essay
     tab_switches_count: str = Form("0"),         # number of tab switches during test
     tab_switches_total_seconds: str = Form("0"), # cumulative seconds away
+    submission_reason: str = Form(""),           # why the test ended; see _validate_submission_reason
     audio_0: UploadFile | None = File(None),
     audio_1: UploadFile | None = File(None),
     audio_2: UploadFile | None = File(None),
@@ -243,6 +271,16 @@ async def submit_test(
             f"[SUBMIT] Tab switches: count={ts_count}, total_seconds={ts_seconds}",
             flush=True,
         )
+
+    # ---- 4c. Record submission reason ----
+    # is_terminated (3+ tab switches) wins over whatever the frontend sent —
+    # this keeps stale clients from mislabeling a tab-switch termination as
+    # "candidate_finished". For timer-expiry the frontend's value is honored.
+    if is_terminated:
+        inv.submission_reason = "tab_switch_termination"
+    else:
+        inv.submission_reason = _validate_submission_reason(submission_reason)
+    print(f"[SUBMIT] submission_reason={inv.submission_reason}", flush=True)
 
     # ---- 5. Mark submitted (single-use enforcement) ----
     inv.submitted_at = _utcnow_naive()

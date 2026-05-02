@@ -313,6 +313,7 @@ def result_detail(
         ai_feedback=s.ai_feedback if s else None,
         tab_switches_count=inv.tab_switches_count or 0,
         tab_switches_total_seconds=inv.tab_switches_total_seconds or 0,
+        submission_reason=inv.submission_reason,
         audio_recordings=audio_pubs,
     )
 

@@ -172,6 +172,11 @@ class ScoreDetail(BaseModel):
     tab_switches_count: Optional[int] = 0
     tab_switches_total_seconds: Optional[int] = 0
 
+    # Why the test ended. Null for old rows submitted before this column existed.
+    # One of: candidate_finished | reading_timer_expired | writing_timer_expired
+    # | speaking_timer_expired | tab_switch_termination.
+    submission_reason: Optional[str] = None
+
     # Per-recording metadata. Frontend uses these IDs to fetch audio bytes
     # via GET /api/hr/audio/{id}. Empty list if candidate hasn't submitted yet.
     audio_recordings: list[AudioRecordingPublic] = []
