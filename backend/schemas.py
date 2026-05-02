@@ -34,11 +34,81 @@ class InviteCreateRequest(BaseModel):
 
 
 class InviteCreateResponse(BaseModel):
+    """
+    Response from POST /api/hr/invite (and POST /api/hr/invite/{id}/regenerate-code).
+
+    Includes everything the frontend needs to:
+      - Display "Invitation sent to <name>" toast on success
+      - Display the URL + access code in a recovery modal on email failure
+      - Refresh the dashboard table without an extra round-trip
+    """
     invitation_id: int
     token: str
+    candidate_name: str
+    candidate_email: str
+    difficulty: str
     exam_url: str
     access_code: str       # 6-digit code candidate enters after opening URL
     expires_at: datetime
+    # Email delivery state — drives the dashboard's UX after Generate Link.
+    #   "sent"    → frontend shows success toast, closes modal
+    #   "failed"  → frontend keeps modal open, shows error + URL/code as fallback
+    #   "pending" → SMTP not configured at all (treat like "failed" in UI)
+    email_status: str
+    email_error: Optional[str] = None    # short reason if email_status == "failed"
+
+
+class InvitationDetails(BaseModel):
+    """
+    Response from GET /api/hr/invitation/{id}/details.
+
+    Used by the Candidate Detail page to render the "INVITATION DETAILS" card
+    for pending (not-yet-submitted) candidates. HR uses this view to:
+      - Recover the URL + access code if they closed the post-invite modal
+      - Resend the invitation email
+      - See whether the candidate has started the test or is still pending
+
+    For submitted candidates the frontend will NOT render this card (decision
+    locked in during planning) — the page goes straight to score breakdowns.
+    The endpoint still returns valid data for submitted invitations so the
+    backend stays simple; the frontend decides whether to show it.
+    """
+    invitation_id: int
+    candidate_name: str
+    candidate_email: str
+    difficulty: str
+
+    # Lifecycle timestamps. submitted_at is None for pending candidates;
+    # the frontend uses this to decide whether to render this card at all.
+    created_at: datetime
+    expires_at: datetime
+    started_at: Optional[datetime] = None
+    submitted_at: Optional[datetime] = None
+
+    # The URL + 6-digit code HR can copy if they need to share manually.
+    exam_url: str
+    access_code: str
+
+    # Email delivery state (same meaning as InviteCreateResponse).
+    email_status: str
+    email_error: Optional[str] = None
+
+    # Lockout state — if True, the candidate hit the 5-wrong-code limit and
+    # needs the access code regenerated. Frontend may show a warning banner.
+    code_locked: bool = False
+    failed_code_attempts: int = 0
+
+
+class ResendEmailResponse(BaseModel):
+    """
+    Response from POST /api/hr/invite/{id}/resend-email.
+
+    The frontend uses this to update the Email Status badge on the candidate
+    detail page without a full page refresh — and to show a toast saying
+    "Email sent" or "Email failed: <reason>".
+    """
+    email_status: str                    # "sent" | "failed"
+    email_error: Optional[str] = None
 
 
 class ExamCodeVerifyRequest(BaseModel):
@@ -129,6 +199,12 @@ class ScoreSummary(BaseModel):
     speaking_score: Optional[int]
     total_score: Optional[int]
     rating: Optional[str]
+    # Email delivery state. One of:
+    #   "pending" — send not yet attempted (legacy rows, or SMTP not configured)
+    #   "sent"    — SMTP accepted the message
+    #   "failed"  — SMTP send failed; HR action needed (see email_error)
+    email_status: str = "pending"
+    email_error: Optional[str] = None    # short reason if email_status == "failed"
 
 
 class AudioRecordingPublic(BaseModel):
