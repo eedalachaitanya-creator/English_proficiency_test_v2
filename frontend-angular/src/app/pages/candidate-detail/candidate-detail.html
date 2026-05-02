@@ -29,6 +29,12 @@
     <h1 style="margin-top: 0;">
       {{ detail()!.candidate_name }}
     </h1>
+    @if (submissionReasonBadge(detail()!.submission_reason); as badge) {
+      <div [style.color]="badge.color"
+           style="margin: 6px 0 12px 0; font-size: 13px; font-weight: 600;">
+        {{ badge.icon }}&nbsp;&nbsp;{{ badge.label }}
+      </div>
+    }
     <div class="text-muted" style="margin-bottom: 24px;">
       {{ detail()!.candidate_email }} &nbsp;•&nbsp;
       Difficulty: {{ detail()!.difficulty }} &nbsp;•&nbsp;

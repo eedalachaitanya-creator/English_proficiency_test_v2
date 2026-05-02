@@ -127,4 +127,26 @@ export class CandidateDetail implements OnInit {
   audioUrl(audioId: number): string {
     return `http://localhost:8000/api/hr/audio/${audioId}`;
   }
+
+  /**
+   * Map a submission_reason value to a visual badge for the candidate detail
+   * header. Returns null for the default 'candidate_finished' (no badge shown)
+   * or for unknown values (graceful fallback for old / forward-compat rows).
+   */
+  submissionReasonBadge(
+    reason: string | null
+  ): { color: string; icon: string; label: string } | null {
+    switch (reason) {
+      case 'reading_timer_expired':
+        return { color: 'var(--text-muted)', icon: '⏱', label: 'Auto-submitted (reading timer)' };
+      case 'writing_timer_expired':
+        return { color: 'var(--text-muted)', icon: '⏱', label: 'Auto-submitted (writing timer)' };
+      case 'speaking_timer_expired':
+        return { color: 'var(--text-muted)', icon: '⏱', label: 'Auto-submitted (speaking timer)' };
+      case 'tab_switch_termination':
+        return { color: 'var(--red)', icon: '🚫', label: 'Terminated (tab switching)' };
+      default:
+        return null;
+    }
+  }
 }

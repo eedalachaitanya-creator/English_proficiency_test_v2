@@ -106,5 +106,10 @@ export interface ResultDetail {
   rating: string | null;
   ai_feedback: string | null;
 
+  // Why the test ended. Null for old rows submitted before this column existed.
+  // One of: candidate_finished | reading_timer_expired | writing_timer_expired
+  // | speaking_timer_expired | tab_switch_termination.
+  submission_reason: string | null;
+
   audio_recordings: AudioRecordingPublic[];
 }
