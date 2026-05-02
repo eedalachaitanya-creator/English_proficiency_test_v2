@@ -252,3 +252,9 @@ audio_uploads/
 PROJECT_OVERVIEW.docx
 TEAM_HANDOFF.md
 *.docx
+
+# Zip uploads/exports (transient, never the source of truth)
+*.zip
+
+# Local SMTP / debug test scripts (not part of the deliverable)
+backend/test_smtp.py
