@@ -1,7 +1,7 @@
 import { Component, OnInit, inject, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
 import { ApiService, ApiError } from '../../core/services/api.service';
 import { AuthService } from '../../core/services/auth.service';
@@ -35,7 +35,7 @@ import { Footer } from '../../shared/components/footer/footer';
 @Component({
   selector: 'app-hr-dashboard',
   standalone: true,
-  imports: [CommonModule, FormsModule, Topnav, Footer],
+  imports: [CommonModule, FormsModule, RouterLink, Topnav, Footer],
   templateUrl: './hr-dashboard.html',
   styleUrl: './hr-dashboard.css',
 })

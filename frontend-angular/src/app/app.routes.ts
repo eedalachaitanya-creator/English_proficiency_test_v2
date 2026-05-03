@@ -2,17 +2,18 @@ import { Routes } from '@angular/router';
 import { hrAuthGuard } from './core/guards/hr-auth.guard';
 
 /**
- * COMPLETE — all 10 steps wired:
- *   /                          → /login
- *   /login                     → Login (HR)
- *   /dashboard                 → HrDashboard (HR-guarded)
- *   /dashboard/candidate/:id   → CandidateDetail (HR-guarded)
- *   /exam/:token               → ExamEntry (passcode)
- *   /instructions              → Instructions
- *   /reading                   → Reading (Step 7)
- *   /writing                   → Writing (Step 8)
- *   /speaking                  → Speaking (Step 9)
- *   /submitted                 → Submitted (Step 10)
+ * Wired routes:
+ *   /                                  → /login
+ *   /login                             → Login (HR)
+ *   /dashboard                         → HrDashboard
+ *   /dashboard/candidate/:id           → CandidateDetail
+ *   /dashboard/content                 → ContentHub (HR question authoring landing)
+ *   /dashboard/content/questions       → ContentQuestions (Phase 3)
+ *   /dashboard/content/passages        → (Phase 4 — coming next)
+ *   /dashboard/content/writing-topics  → (Phase 5)
+ *   /dashboard/content/speaking-topics → (Phase 6)
+ *   /exam/:token                       → ExamEntry (passcode)
+ *   /instructions, /reading, /writing, /speaking, /submitted → candidate flow
  */
 export const routes: Routes = [
   {
@@ -35,6 +36,36 @@ export const routes: Routes = [
     path: 'dashboard/candidate/:id',
     loadComponent: () =>
       import('./pages/candidate-detail/candidate-detail').then(m => m.CandidateDetail),
+    canActivate: [hrAuthGuard],
+  },
+  {
+    path: 'dashboard/content',
+    loadComponent: () =>
+      import('./pages/content-hub/content-hub').then(m => m.ContentHub),
+    canActivate: [hrAuthGuard],
+  },
+  {
+    path: 'dashboard/content/questions',
+    loadComponent: () =>
+      import('./pages/content-questions/content-questions').then(m => m.ContentQuestions),
+    canActivate: [hrAuthGuard],
+  },
+  {
+    path: 'dashboard/content/passages',
+    loadComponent: () =>
+      import('./pages/content-passages/content-passages').then(m => m.ContentPassages),
+    canActivate: [hrAuthGuard],
+  },
+  {
+    path: 'dashboard/content/writing-topics',
+    loadComponent: () =>
+      import('./pages/content-writing-topics/content-writing-topics').then(m => m.ContentWritingTopics),
+    canActivate: [hrAuthGuard],
+  },
+  {
+    path: 'dashboard/content/speaking-topics',
+    loadComponent: () =>
+      import('./pages/content-speaking-topics/content-speaking-topics').then(m => m.ContentSpeakingTopics),
     canActivate: [hrAuthGuard],
   },
   {

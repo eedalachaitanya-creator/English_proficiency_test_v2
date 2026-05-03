@@ -469,13 +469,15 @@ table.results tbody tr:last-child td { border-bottom: none; }
 }
 .modal-backdrop.show { display: flex; }
 .modal {
-  background: var(--white);
-  border-radius: var(--radius);
-  padding: 28px;
-  width: 100%; max-width: 480px;
-  box-shadow: var(--shadow-md);
-  animation: scale-in 0.15s ease-out;
-}
+    background: var(--white);
+    border-radius: var(--radius);
+    padding: 28px;
+    width: 100%; max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-md);
+    animation: scale-in 0.15s ease-out;
+  }
 .modal h2 { margin-bottom: 6px; }
 .modal-message {
   font-size: 15px;

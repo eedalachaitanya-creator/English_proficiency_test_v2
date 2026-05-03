@@ -256,3 +256,138 @@ class ScoreDetail(BaseModel):
     # Per-recording metadata. Frontend uses these IDs to fetch audio bytes
     # via GET /api/hr/audio/{id}. Empty list if candidate hasn't submitted yet.
     audio_recordings: list[AudioRecordingPublic] = []
+
+# ============================================================
+# HR CONTENT AUTHORING (Day 2 evening)
+#
+# These schemas back the new /api/hr/content/* CRUD endpoints in
+# routes/hr_content.py. Naming convention: *Out for HR-facing reads
+# (which DO include correct_answer for questions, unlike *Public),
+# *Create for POST bodies, *Update for PATCH bodies (all fields optional).
+# ============================================================
+
+
+class PassageOut(BaseModel):
+    """HR view of a passage. Includes everything a candidate-facing
+    PassagePublic would NOT — difficulty, topic, word_count."""
+    id: int
+    title: str
+    body: str
+    difficulty: str
+    topic: Optional[str] = None
+    word_count: int
+
+    class Config:
+        from_attributes = True
+
+
+class PassageCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1)
+    difficulty: Literal["intermediate", "expert"]
+    topic: Optional[str] = None
+
+
+class PassageUpdate(BaseModel):
+    """All fields optional — PATCH semantics, send only what you want to change."""
+    title: Optional[str] = None
+    body: Optional[str] = None
+    difficulty: Optional[Literal["intermediate", "expert"]] = None
+    topic: Optional[str] = None
+
+
+class QuestionOut(BaseModel):
+    """HR view of a question. Crucially DOES include correct_answer
+    (the candidate-facing QuestionPublic does not)."""
+    id: int
+    question_type: Literal["reading_comp", "grammar", "vocabulary", "fill_blank"]
+    difficulty: str
+    stem: str
+    options: list[str]
+    correct_answer: int
+    passage_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class QuestionCreate(BaseModel):
+    question_type: Literal["reading_comp", "grammar", "vocabulary", "fill_blank"]
+    difficulty: Literal["intermediate", "expert"]
+    stem: str = Field(min_length=1)
+    options: list[str] = Field(min_length=4, max_length=4)
+    correct_answer: int = Field(ge=0, le=3)
+    # Required only when question_type == "reading_comp" — enforced in the route.
+    passage_id: Optional[int] = None
+
+
+class QuestionUpdate(BaseModel):
+    stem: Optional[str] = None
+    difficulty: Optional[Literal["intermediate", "expert"]] = None
+    options: Optional[list[str]] = None
+    correct_answer: Optional[int] = None
+    # NOTE: question_type and passage_id are deliberately NOT updatable.
+    # Changing them post-creation would invalidate the question's
+    # relationship to whichever passage it belongs to and break invitations
+    # that already reference it.
+
+
+class WritingTopicOut(BaseModel):
+    """HR view of a writing topic. Includes difficulty + category that
+    the candidate-facing WritingTopicPublic doesn't expose."""
+    id: int
+    prompt_text: str
+    difficulty: str
+    min_words: int
+    max_words: int
+    category: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class WritingTopicCreate(BaseModel):
+    prompt_text: str = Field(min_length=1)
+    difficulty: Literal["intermediate", "expert"]
+    min_words: int = Field(ge=50, le=1000)
+    max_words: int = Field(ge=50, le=1000)
+    category: Optional[str] = None
+
+
+class WritingTopicUpdate(BaseModel):
+    prompt_text: Optional[str] = None
+    difficulty: Optional[Literal["intermediate", "expert"]] = None
+    min_words: Optional[int] = None
+    max_words: Optional[int] = None
+    category: Optional[str] = None
+
+
+class SpeakingTopicOut(BaseModel):
+    """HR view of a speaking topic. Includes difficulty + category."""
+    id: int
+    prompt_text: str
+    difficulty: str
+    category: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SpeakingTopicCreate(BaseModel):
+    prompt_text: str = Field(min_length=1)
+    difficulty: Literal["intermediate", "expert"]
+    category: Optional[str] = None
+
+
+class SpeakingTopicUpdate(BaseModel):
+    prompt_text: Optional[str] = None
+    difficulty: Optional[Literal["intermediate", "expert"]] = None
+    category: Optional[str] = None
+
+
+class BulkImportResult(BaseModel):
+    """Response from any /bulk endpoint — how many rows succeeded, plus
+    a row-by-row error list for the ones that didn't. Frontend renders
+    this as 'Imported X items, Y errors:' followed by the error strings."""
+    created: int
+    errors: list[str] = []

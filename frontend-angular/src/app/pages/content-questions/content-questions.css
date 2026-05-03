@@ -1,0 +1,260 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.cq-page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 32px 80px;
+}
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.back-link {
+  display: inline-block;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-decoration: none;
+  margin-bottom: 12px;
+}
+.back-link:hover {
+  color: var(--navy);
+  text-decoration: underline;
+}
+
+.page-header h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  color: var(--navy);
+}
+.page-header .subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+.toolbar select {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--white);
+  font-size: 14px;
+  color: var(--text);
+}
+.toolbar .spacer {
+  flex: 1;
+}
+
+/* The questions table */
+.cq-table {
+  width: 100%;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+.cq-table th, .cq-table td {
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: top;
+}
+.cq-table th {
+  background: var(--bg);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.cq-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.cq-table tbody tr:hover {
+  background: rgba(255, 107, 53, 0.04);
+}
+
+/* Type badges */
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.badge.type-reading_comp { background: #e3f2fd; color: #0d47a1; }
+.badge.type-grammar      { background: #e8f5e9; color: #1b5e20; }
+.badge.type-vocabulary   { background: #fff3e0; color: #e65100; }
+.badge.type-fill_blank   { background: #f3e5f5; color: #4a148c; }
+
+/* Action links in table cells */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--navy);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: none;
+}
+.btn-link:hover {
+  text-decoration: underline;
+}
+.btn-link.danger {
+  color: var(--red);
+}
+
+/* Modal sizing — wider for the create/edit form */
+.modal-wide {
+  max-width: 640px;
+}
+
+/* Form-level styles inside modal */
+.field {
+  margin-bottom: 16px;
+}
+.field label {
+  display: block;
+  font-size: 13px;
+  color: var(--navy);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.field input[type="text"],
+.field textarea,
+.field select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.field textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.15);
+}
+
+.readonly-field {
+  padding: 8px 12px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.radios {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.radios label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 0;
+}
+
+/* Option rows in the question form */
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.option-row input[type="radio"] {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.option-letter {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--navy);
+  width: 18px;
+  text-align: center;
+}
+.option-input {
+  flex: 1;
+}
+
+.field-error {
+  background: rgba(220, 53, 69, 0.08);
+  color: var(--red);
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin: 12px 0;
+}
+
+/* CSV modal helper styles */
+.csv-help {
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.csv-help ol {
+  margin: 8px 0 8px 20px;
+  padding: 0;
+}
+.csv-help code {
+  background: var(--white);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.csv-result .result-stat {
+  padding: 12px;
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+.csv-result .result-stat.success {
+  background: rgba(40, 167, 69, 0.1);
+  color: #1b5e20;
+}
+.csv-result .result-stat.error {
+  background: rgba(220, 53, 69, 0.08);
+  color: var(--red);
+}
+.csv-result .result-stat ul {
+  margin: 6px 0 0 18px;
+  padding: 0;
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .cq-page {
+    padding: 16px;
+  }
+}

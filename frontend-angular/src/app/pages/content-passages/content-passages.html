@@ -1,0 +1,235 @@
+<app-topnav title="Manage Reading Passages" [showLogout]="true"></app-topnav>
+
+<main class="cp-page">
+
+  <div class="page-header">
+    <a routerLink="/dashboard/content" class="back-link">← Back to Content Hub</a>
+    <h1>Reading Passages</h1>
+    <p class="subtitle">
+      The 200–500 word texts shown on the reading section. Each passage usually has 5 reading-comprehension questions linked to it.
+    </p>
+  </div>
+
+  <!-- Filters + actions -->
+  <div class="toolbar">
+    <select [ngModel]="filterDifficulty()" (ngModelChange)="filterDifficulty.set($event)">
+      <option value="">All difficulties</option>
+      <option value="intermediate">Intermediate</option>
+      <option value="expert">Expert</option>
+    </select>
+
+    <span class="spacer"></span>
+
+    <button class="btn btn-secondary" (click)="openCsvModal()">📥 IMPORT CSV</button>
+    <button class="btn btn-primary" (click)="openCreateForm()">+ NEW PASSAGE</button>
+  </div>
+
+  @if (loadError()) {
+    <div class="notice">
+      <strong>Could not load passages.</strong>
+      {{ loadError() }}
+    </div>
+  }
+
+  <!-- Passages table -->
+  <table class="cp-table">
+    <thead>
+      <tr>
+        <th style="width: 250px;">Title</th>
+        <th style="width: 100px;">Difficulty</th>
+        <th>Body Preview</th>
+        <th style="width: 100px;">Words</th>
+        <th style="width: 120px;">Topic</th>
+        <th style="width: 140px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      @if (loading()) {
+        <tr>
+          <td colspan="6" class="text-muted text-center" style="padding: 24px;">Loading…</td>
+        </tr>
+      } @else if (filteredPassages().length === 0) {
+        <tr>
+          <td colspan="6" class="text-muted text-center" style="padding: 24px;">
+            @if (passages().length === 0) {
+              No passages yet. Click "+ NEW PASSAGE" or "IMPORT CSV" to add some.
+            } @else {
+              No passages match this filter.
+            }
+          </td>
+        </tr>
+      } @else {
+        @for (p of filteredPassages(); track trackById($index, p)) {
+          <tr>
+            <td><strong>{{ p.title }}</strong></td>
+            <td>{{ p.difficulty }}</td>
+            <td class="text-muted" style="font-size: 13px;">{{ truncate(p.body, 120) }}</td>
+            <td class="text-mono">{{ p.word_count }}</td>
+            <td class="text-muted" style="font-size: 13px;">{{ p.topic ?? '—' }}</td>
+            <td>
+              <button class="btn-link" (click)="openEditForm(p)">Edit</button>
+              <span style="color: var(--border); margin: 0 6px;">|</span>
+              <button class="btn-link danger" (click)="onDelete(p)">Delete</button>
+            </td>
+          </tr>
+        }
+      }
+    </tbody>
+  </table>
+
+  @if (!loading() && filteredPassages().length > 0) {
+    <div class="text-muted text-center mt-4" style="font-size: 13px;">
+      Showing {{ filteredPassages().length }} of {{ passages().length }} passages
+    </div>
+  }
+
+</main>
+
+<app-footer text="© Company HR  •  Privacy  •  Support"></app-footer>
+
+
+<!-- ===================================================================== -->
+<!--  Create / Edit modal                                                  -->
+<!-- ===================================================================== -->
+@if (formOpen()) {
+  <div class="modal-backdrop show" (click)="closeForm()">
+    <div class="modal modal-wide" (click)="$event.stopPropagation()">
+      <h2>{{ formMode() === 'create' ? 'New Passage' : 'Edit Passage' }}</h2>
+
+      <div class="field">
+        <label for="ptitle">Title</label>
+        <input type="text" id="ptitle"
+               [ngModel]="formTitle()"
+               (ngModelChange)="formTitle.set($event)"
+               placeholder="e.g. The Rise of Renewable Energy">
+      </div>
+
+      <div class="field">
+        <label>Difficulty</label>
+        <div class="radios">
+          <label>
+            <input type="radio" name="pdiff" value="intermediate"
+                   [checked]="formDifficulty() === 'intermediate'"
+                   (change)="formDifficulty.set('intermediate')">
+            Intermediate
+          </label>
+          <label>
+            <input type="radio" name="pdiff" value="expert"
+                   [checked]="formDifficulty() === 'expert'"
+                   (change)="formDifficulty.set('expert')">
+            Expert
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="ptopic">Topic <span class="text-muted" style="font-weight: 400;">(optional)</span></label>
+        <input type="text" id="ptopic"
+               [ngModel]="formTopic()"
+               (ngModelChange)="formTopic.set($event)"
+               placeholder="e.g. environment, technology, business">
+      </div>
+
+      <div class="field">
+        <label for="pbody">
+          Body
+          <span class="word-count" [class.warn]="bodyWordCount() < 50">
+            {{ bodyWordCount() }} words {{ bodyWordCount() < 50 ? '(min 50)' : '' }}
+          </span>
+        </label>
+        <textarea id="pbody" rows="14"
+                  [ngModel]="formBody()"
+                  (ngModelChange)="formBody.set($event)"
+                  placeholder="Paste or type the full passage text here. Minimum 50 words."></textarea>
+      </div>
+
+      @if (formError()) {
+        <div class="field-error">{{ formError() }}</div>
+      }
+
+      <div class="flex-row mt-4">
+        <button type="button" class="btn btn-secondary"
+                [disabled]="formSubmitting()"
+                (click)="closeForm()">Cancel</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-primary"
+                [disabled]="formSubmitting()"
+                (click)="submitForm()">
+          @if (formSubmitting()) { Saving… }
+          @else if (formMode() === 'create') { Create Passage }
+          @else { Save Changes }
+        </button>
+      </div>
+    </div>
+  </div>
+}
+
+
+<!-- ===================================================================== -->
+<!--  CSV Import modal                                                     -->
+<!-- ===================================================================== -->
+@if (csvOpen()) {
+  <div class="modal-backdrop show" (click)="closeCsvModal()">
+    <div class="modal" (click)="$event.stopPropagation()">
+      <h2>Import Passages from CSV</h2>
+      <p class="subtitle">Upload a CSV with multiple passages at once.</p>
+
+      @if (!csvResult()) {
+        <div class="csv-help">
+          <strong>Required columns</strong>:
+          <ol>
+            <li><code>title</code> — passage title</li>
+            <li><code>body</code> — the full passage text (min 50 words)</li>
+            <li><code>difficulty</code> — intermediate or expert</li>
+            <li><code>topic</code> — short tag like "technology" or leave blank</li>
+          </ol>
+          <small class="text-muted">
+            For passages with line breaks in the body, wrap the body in double quotes
+            in your CSV. Excel and Google Sheets do this automatically when you export.
+          </small>
+        </div>
+
+        <div class="field">
+          <input type="file" accept=".csv" (change)="onCsvFileSelected($event)">
+        </div>
+
+        @if (csvError()) {
+          <div class="field-error">{{ csvError() }}</div>
+        }
+
+        <div class="flex-row mt-4">
+          <button type="button" class="btn btn-secondary"
+                  [disabled]="csvSubmitting()"
+                  (click)="closeCsvModal()">Cancel</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-primary"
+                  [disabled]="csvSubmitting() || !csvFile()"
+                  (click)="submitCsv()">
+            @if (csvSubmitting()) { Uploading… }
+            @else { Upload }
+          </button>
+        </div>
+      } @else {
+        <div class="csv-result">
+          <div class="result-stat success">
+            <strong>{{ csvResult()!.created }}</strong> passages created
+          </div>
+          @if (csvResult()!.errors.length > 0) {
+            <div class="result-stat error">
+              <strong>{{ csvResult()!.errors.length }}</strong> rows had errors:
+              <ul>
+                @for (e of csvResult()!.errors; track $index) {
+                  <li>{{ e }}</li>
+                }
+              </ul>
+            </div>
+          }
+        </div>
+        <div class="flex-row mt-4">
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-primary" (click)="closeCsvModal()">Done</button>
+        </div>
+      }
+    </div>
+  </div>
+}
