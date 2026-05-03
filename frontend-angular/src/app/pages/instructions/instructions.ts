@@ -22,6 +22,8 @@ export class Instructions implements OnInit {
   content = signal<TestContent | null>(null);
   loadError = signal('');
   micStatus = signal<'idle' | 'requesting' | 'ok' | 'failed'>('idle');
+  // The candidate must check the acknowledgment before "Begin Test" enables.
+  acknowledged = signal(false);
 
   candidateMeta = computed(() => {
     const c = this.content();
@@ -78,7 +80,14 @@ export class Instructions implements OnInit {
       });
   }
 
+  onAcknowledgeChange(checked: boolean): void {
+    this.acknowledged.set(checked);
+  }
+
   beginTest(): void {
+    // Defensive — the button binding already prevents this, but a determined
+    // user could enable the button via DevTools. Keep the gate honest.
+    if (!this.acknowledged()) return;
     this.router.navigate(['/reading']);
   }
 }

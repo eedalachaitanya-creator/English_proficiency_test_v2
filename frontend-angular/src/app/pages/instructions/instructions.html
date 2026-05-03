@@ -74,8 +74,27 @@
       </span>
 
       <span class="spacer"></span>
+    </div>
 
-      <button class="btn btn-primary" (click)="beginTest()" [disabled]="!content()">
+    <!-- Acknowledgment — must be checked before BEGIN TEST enables. -->
+    <div style="margin-top: 24px; padding: 16px; background: var(--bg-subtle, #f8f9fa); border: 1px solid var(--border, #e5e7eb); border-radius: 8px;">
+      <label style="display: flex; align-items: flex-start; gap: 12px; cursor: pointer; font-size: 14px; line-height: 1.5;">
+        <input type="checkbox"
+               [checked]="acknowledged()"
+               (change)="onAcknowledgeChange(($any($event.target)).checked)"
+               style="margin-top: 3px; flex-shrink: 0; width: 18px; height: 18px; cursor: pointer;">
+        <span>
+          I have read the instructions and agree to take this test independently
+          and honestly. I understand my responses, including audio recordings, will
+          be reviewed by the HR team.
+        </span>
+      </label>
+    </div>
+
+    <div class="instructions-footer" style="margin-top: 24px; display: flex; justify-content: flex-end;">
+      <button class="btn btn-primary"
+              (click)="beginTest()"
+              [disabled]="!content() || !acknowledged()">
         BEGIN TEST  →
       </button>
     </div>
