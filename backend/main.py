@@ -76,7 +76,7 @@ if IS_PRODUCTION and not CORS_ALLOWED_ORIGINS:
 async def lifespan(app: FastAPI):
     """Run once on startup. Creates DB tables if missing."""
     init_db()
-    print(f"[startup] DB ready. Frontend served from: {FRONTEND_DIR}")
+    print("[startup] DB ready.")
     yield
     print("[shutdown] goodbye.")
 
@@ -143,7 +143,14 @@ def api_not_found(full_path: str):
 # ------------------------------------------------------------------
 # Static frontend (mounted last so API routes take precedence)
 # ------------------------------------------------------------------
-if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+ANGULAR_DIST = (
+    Path(__file__).resolve().parent.parent
+    / "frontend-angular" / "dist" / "frontend-angular" / "browser"
+)
+
+if ANGULAR_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(ANGULAR_DIST), html=True), name="frontend")
+    print(f"[startup] Angular SPA mounted from: {ANGULAR_DIST}")
 else:
-    print(f"[warn] frontend dir not found at {FRONTEND_DIR}; static mount skipped")
+    print(f"[warn] Angular dist not found at {ANGULAR_DIST}")
+    print(f"[warn] Run: cd frontend-angular && ng build  before starting the backend in production")

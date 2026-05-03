@@ -2,6 +2,7 @@ import { Component, OnInit, inject, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { forkJoin, of, catchError } from 'rxjs';
+import { environment } from '../../../environments/environment';
 
 import { ApiService, ApiError } from '../../core/services/api.service';
 import { AuthService } from '../../core/services/auth.service';
@@ -340,7 +341,7 @@ export class CandidateDetail implements OnInit {
   }
 
   audioUrl(audioId: number): string {
-    return `http://localhost:8000/api/hr/audio/${audioId}`;
+    return `${environment.apiUrl}/api/hr/audio/${audioId}`;
   }
 
   /**

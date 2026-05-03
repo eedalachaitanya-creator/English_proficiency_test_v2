@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { Observable, catchError, throwError } from 'rxjs';
+import { environment } from '../../../environments/environment';
 
 /**
  * Custom error class thrown by ApiService on non-2xx responses.
@@ -57,7 +58,7 @@ export class ApiService {
    *
    * Override at build time via Angular environment files later if needed.
    */
-  private readonly baseUrl = 'http://localhost:8000';
+  private readonly baseUrl = environment.apiUrl;
 
   /** Standard GET. Returns an Observable of the typed response. */
   get<T>(path: string): Observable<T> {

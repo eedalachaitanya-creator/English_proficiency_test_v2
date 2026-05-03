@@ -2,18 +2,22 @@ import { Routes } from '@angular/router';
 import { hrAuthGuard } from './core/guards/hr-auth.guard';
 
 /**
- * Wired routes:
+ * COMPLETE — all routes wired:
  *   /                                  → /login
  *   /login                             → Login (HR)
- *   /dashboard                         → HrDashboard
- *   /dashboard/candidate/:id           → CandidateDetail
+ *   /dashboard                         → HrDashboard (HR-guarded)
+ *   /dashboard/candidate/:id           → CandidateDetail (HR-guarded)
  *   /dashboard/content                 → ContentHub (HR question authoring landing)
  *   /dashboard/content/questions       → ContentQuestions (Phase 3)
- *   /dashboard/content/passages        → (Phase 4 — coming next)
- *   /dashboard/content/writing-topics  → (Phase 5)
- *   /dashboard/content/speaking-topics → (Phase 6)
+ *   /dashboard/content/passages        → ContentPassages (Phase 4)
+ *   /dashboard/content/writing-topics  → ContentWritingTopics (Phase 5)
+ *   /dashboard/content/speaking-topics → ContentSpeakingTopics (Phase 6)
  *   /exam/:token                       → ExamEntry (passcode)
- *   /instructions, /reading, /writing, /speaking, /submitted → candidate flow
+ *   /instructions                      → Instructions
+ *   /reading                           → Reading
+ *   /writing                           → Writing
+ *   /speaking                          → Speaking
+ *   /submitted                         → Submitted
  */
 export const routes: Routes = [
   {

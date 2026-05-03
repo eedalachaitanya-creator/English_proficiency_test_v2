@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams, HttpHeaders } from '@angular/common/http';
 import { Observable, catchError } from 'rxjs';
+import { environment } from '../../../environments/environment';
 
 import { ApiService, ApiError } from './api.service';
 
@@ -126,7 +127,7 @@ export class HrContentService {
   // ApiService doesn't expose a baseUrl getter, so we inline the base
   // for the few calls (DELETE, PATCH, multipart upload) that need
   // direct HttpClient access.
-  private readonly baseUrl = 'http://localhost:8000';
+  private readonly baseUrl = environment.apiUrl;
 
   // ---------- PASSAGES ----------
   listPassages(difficulty?: string): Observable<PassageOut[]> {
