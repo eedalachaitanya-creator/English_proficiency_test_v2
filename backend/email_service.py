@@ -36,6 +36,8 @@ import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
 
+import certifi
+
 
 # ---------------------------------------------------------------------------
 # Force IPv4 for SMTP — workaround for ISP-level IPv6 routing failures.
@@ -115,7 +117,10 @@ def send_invitation_email(
         # to fail fast than block the HR's UI for 60+ seconds.
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
             # Negotiate TLS. Office 365 won't accept AUTH on a plaintext channel.
-            context = ssl.create_default_context()
+            # Pass certifi's CA bundle explicitly — the default macOS+Anaconda
+            # Python SSL store often can't verify Microsoft / Google certs,
+            # which surfaces as SSLCertVerificationError during STARTTLS.
+            context = ssl.create_default_context(cafile=certifi.where())
             server.starttls(context=context)
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
@@ -164,7 +169,10 @@ def send_regenerated_code_email(
 
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            context = ssl.create_default_context()
+            # Pass certifi's CA bundle explicitly — the default macOS+Anaconda
+            # Python SSL store often can't verify Microsoft / Google certs,
+            # which surfaces as SSLCertVerificationError during STARTTLS.
+            context = ssl.create_default_context(cafile=certifi.where())
             server.starttls(context=context)
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
