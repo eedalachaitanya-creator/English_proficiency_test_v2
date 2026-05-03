@@ -50,6 +50,9 @@ export class Writing implements OnInit, OnDestroy {
   essay = signal<string>('');
   timerText = signal('--:--');
   timerState = signal<'normal' | 'warning' | 'danger'>('normal');
+  // Transient red message under the textarea when the candidate tries to
+  // paste/drop. Auto-clears after 3 seconds. See onPaste / onDrop below.
+  pasteWarning = signal(false);
 
   candidateMeta = computed(() => {
     const c = this.content();
@@ -74,10 +77,18 @@ export class Writing implements OnInit, OnDestroy {
 
   private countdown: TimerHandle | null = null;
   private subs = new Subscription();
+  private pasteWarningTimer: ReturnType<typeof setTimeout> | null = null;
 
   private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
     e.preventDefault();
     e.returnValue = '';
+  };
+
+  // Browser back-button block (popstate guard). Re-pushing the current
+  // history state on every popstate makes the OS back button a no-op,
+  // matching how the legacy writing.js blocks backward navigation.
+  private popstateHandler = () => {
+    history.pushState(null, '', window.location.href);
   };
 
   ngOnInit(): void {
@@ -86,6 +97,11 @@ export class Writing implements OnInit, OnDestroy {
         this.content.set(c);
         this.essay.set(this.store.getWritingEssay());
         this.startTimer(c);
+        // Block the browser back button only AFTER content loads cleanly.
+        // If load fails, the candidate sees an error screen and needs the
+        // back button to escape — so we don't trap them.
+        history.pushState(null, '', window.location.href);
+        window.addEventListener('popstate', this.popstateHandler);
       },
       error: (err: ApiError) => {
         if (err.status === 401) {
@@ -130,7 +146,7 @@ export class Writing implements OnInit, OnDestroy {
           this.countdown.stop();
           this.countdown = null;
         }
-        this.forceSubmit.terminateAndSubmit();
+        this.forceSubmit.terminateAndSubmit('tab_switch_termination');
       })
     );
 
@@ -142,8 +158,38 @@ export class Writing implements OnInit, OnDestroy {
       this.countdown.stop();
       this.countdown = null;
     }
+    if (this.pasteWarningTimer) {
+      clearTimeout(this.pasteWarningTimer);
+      this.pasteWarningTimer = null;
+    }
     this.subs.unsubscribe();
     window.removeEventListener('beforeunload', this.beforeUnloadHandler);
+    window.removeEventListener('popstate', this.popstateHandler);
+  }
+
+  // ---- Paste/drop block on the essay textarea ----
+  // Candidate must type the essay; pasting (Ctrl/Cmd-V, right-click → Paste,
+  // long-press paste on mobile) and dropping (drag-and-drop a text file) are
+  // both blocked. Each blocked attempt flashes a transient red warning that
+  // auto-clears after 3 seconds.
+  onPaste(e: Event): void {
+    e.preventDefault();
+    this.flashPasteWarning();
+  }
+  onDrop(e: Event): void {
+    e.preventDefault();
+    this.flashPasteWarning();
+  }
+  onDragOver(e: Event): void {
+    e.preventDefault();
+  }
+  private flashPasteWarning(): void {
+    this.pasteWarning.set(true);
+    if (this.pasteWarningTimer) clearTimeout(this.pasteWarningTimer);
+    this.pasteWarningTimer = setTimeout(() => {
+      this.pasteWarning.set(false);
+      this.pasteWarningTimer = null;
+    }, 3000);
   }
 
   private startTimer(c: TestContent): void {
@@ -155,8 +201,8 @@ export class Writing implements OnInit, OnDestroy {
 
     const initialRemaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
     if (initialRemaining === 0) {
-      this.store.setWritingTimeUp(true);
-      this.router.navigate(['/speaking']);
+      // Writing time was already up before this page loaded — auto-submit.
+      this.forceSubmit.terminateAndSubmit('writing_timer_expired');
       return;
     }
 
@@ -174,8 +220,8 @@ export class Writing implements OnInit, OnDestroy {
         }
       },
       () => {
-        this.store.setWritingTimeUp(true);
-        this.router.navigate(['/speaking']);
+        // Writing countdown hit zero — auto-submit (no spillover into speaking).
+        this.forceSubmit.terminateAndSubmit('writing_timer_expired');
       }
     );
   }
@@ -185,18 +231,27 @@ export class Writing implements OnInit, OnDestroy {
     this.store.setWritingEssay(value);
   }
 
-  async onBack(): Promise<void> {
-    const ok = await this.modal.confirm(
-      'Going back will not stop the timer. The countdown keeps running.',
-      { okText: 'Go Back', cancelText: 'Stay' }
-    );
-    if (ok) this.router.navigate(['/reading']);
-  }
+  // Note: the onBack() handler that used to live here was removed along with
+  // its UI button. Backward navigation between test sections is blocked by
+  // design — see ngOnInit's popstate guard.
 
   async onContinue(): Promise<void> {
     const count = this.wordCount();
     const min = this.minWords();
     const max = this.maxWords();
+
+    // HARD floor: backend's routes/submit.py:HARD_FLOOR_WORDS=50 will reject
+    // any essay under 50 words at final submission. We block here too so the
+    // candidate gets the error at the source instead of seeing "Essay too
+    // short" pop up on the Speaking page after they've recorded their audio.
+    if (count < 50) {
+      await this.modal.alert(
+        `Your essay is only ${count} word${count === 1 ? '' : 's'}. ` +
+        `The minimum is 50 words. Please write more before continuing.`,
+        { title: 'Essay too short' }
+      );
+      return;
+    }
 
     if (count < min) {
       const ok = await this.modal.confirm(

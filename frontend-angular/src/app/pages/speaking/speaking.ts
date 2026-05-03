@@ -12,9 +12,24 @@ import { StoreService } from '../../core/services/store.service';
 import { TimerService, TimerHandle } from '../../core/services/timer.service';
 import { ModalService } from '../../core/services/modal.service';
 import { VisibilityTrackerService } from '../../core/services/visibility-tracker.service';
+import type { SubmissionReason } from '../../core/services/force-submit.service';
 import { TestContent, SpeakingTopicPublic } from '../../core/models/test.models';
 import { Topnav } from '../../shared/components/topnav/topnav';
 import { Footer } from '../../shared/components/footer/footer';
+
+// Per-question budget: 1 min mandatory prep + 2:18 recording = 3:18 total.
+// 3 questions × 3:18 = 9:54, leaving 6 seconds slack against the 10-min
+// section safety net for the candidate's between-question clicks.
+const PREP_SECONDS = 60;
+const RECORD_SECONDS = 138;
+
+type Phase = 'idle' | 'prep' | 'recording';
+// Subset of SubmissionReason that the speaking page can produce — reading
+// and writing reasons are produced by their own pages.
+type SpeakingSubmitReason = Extract<
+  SubmissionReason,
+  'candidate_finished' | 'tab_switch_termination' | 'speaking_timer_expired'
+>;
 
 interface RecordingEntry {
   topic_id: number;
@@ -65,13 +80,20 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
   recStatus = signal('Ready to record');
   recStatusKind = signal<'idle' | 'recording' | 'saved' | 'error'>('idle');
   recording = signal(false);
+  /**
+   * Per-question state machine: idle → prep (1:00) → recording (2:18) →
+   * idle (playback shown). Driven by startPrepPhase / startRecording /
+   * onRecorderStopped.
+   */
+  phase = signal<Phase>('idle');
   hasPlayback = signal(false);
   playbackUrl = signal<string>('');
 
   // Recordings is a SIGNAL so canFinish/canNext re-evaluate when it changes.
   recordings = signal<RecordingEntry[]>([]);
 
-  canStart = computed(() => !this.recording() && !!this.content());
+  // Note: `canStart` was removed alongside the manual START button — recording
+  // now auto-starts at the end of each question's prep phase.
   canStop = computed(() => this.recording());
   canFinish = computed(() => {
     const t = this.topics();
@@ -117,11 +139,22 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
   private chunks: Blob[] = [];
 
   private countdown: TimerHandle | null = null;
+  private prepTimer: TimerHandle | null = null;
+  /** Hidden 10-min section-level safety net. setTimeout id for cancellation. */
+  private sectionTimerId: ReturnType<typeof setTimeout> | null = null;
+  /** Race guard: only one submit (manual finish, tab-term, section-timer) wins. */
+  private isAutoSubmitting = false;
   private subs = new Subscription();
 
   private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
     e.preventDefault();
     e.returnValue = '';
+  };
+
+  // Browser back-button block (popstate guard). Re-pushing the current
+  // history state on every popstate makes the OS back button a no-op.
+  private popstateHandler = () => {
+    history.pushState(null, '', window.location.href);
   };
 
   ngOnInit(): void {
@@ -137,8 +170,36 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
           return;
         }
         this.topics.set(topics);
-        this.perTopicSeconds.set(Math.floor(c.duration_speaking_seconds / topics.length));
-        this.timerText.set('⏱  ' + this.timer.formatTime(this.perTopicSeconds()));
+        // Recording phase is fixed at RECORD_SECONDS regardless of section
+        // budget — the section budget just acts as the safety-net total.
+        this.perTopicSeconds.set(RECORD_SECONDS);
+        this.timerText.set('⏱  PREP: ' + this.timer.formatTime(PREP_SECONDS));
+
+        // Request mic permission once, up front. Browsers cache the grant
+        // for the page session, so subsequent getUserMedia calls during
+        // recording resolve silently. This stops the permission prompt
+        // from interrupting the end of Q1's prep timer.
+        this.requestMicPermissionUpfront().then((granted) => {
+          if (!granted) {
+            this.recStatus.set(
+              '✗ Microphone permission denied. Please enable mic access and reload this page.'
+            );
+            this.recStatusKind.set('error');
+            return;
+          }
+          this.startPrepPhase();
+        });
+
+        // Start the 10-min section-level safety net. Hidden from the
+        // candidate (per-question timer is the primary UI). Auto-submits
+        // if the candidate idles past the budget.
+        this.startSectionSafetyNet(c.duration_speaking_seconds);
+
+        // Block the browser back button only AFTER content loads cleanly.
+        // If load fails, the candidate sees an error screen and needs the
+        // back button to escape — so we don't trap them.
+        history.pushState(null, '', window.location.href);
+        window.addEventListener('popstate', this.popstateHandler);
       },
       error: (err: ApiError) => {
         if (err.status === 401) {
@@ -190,18 +251,89 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
 
   ngOnDestroy(): void {
     this.cleanupRecording();
+    if (this.sectionTimerId !== null) {
+      clearTimeout(this.sectionTimerId);
+      this.sectionTimerId = null;
+    }
     this.subs.unsubscribe();
     window.removeEventListener('beforeunload', this.beforeUnloadHandler);
+    window.removeEventListener('popstate', this.popstateHandler);
     if (this.playbackUrl()) {
       URL.revokeObjectURL(this.playbackUrl());
     }
   }
 
-  async onStart(): Promise<void> {
+  // ---- Mic permission, requested once at page load ----
+  private async requestMicPermissionUpfront(): Promise<boolean> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Immediately release — we'll re-acquire fresh per recording.
+      stream.getTracks().forEach((t) => t.stop());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ---- Section-level safety net (10 min total speaking budget) ----
+  // Persisted via store so a back-then-forward bounce doesn't reset it.
+  private startSectionSafetyNet(budgetSeconds: number): void {
+    let deadline = this.store.getSpeakingSectionDeadline();
+    if (deadline === null) {
+      deadline = Date.now() + budgetSeconds * 1000;
+      this.store.setSpeakingSectionDeadline(deadline);
+    }
+    const remaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+    if (remaining === 0) {
+      this.autoSubmitWithRecordings('speaking_timer_expired');
+      return;
+    }
+    this.sectionTimerId = setTimeout(() => {
+      this.autoSubmitWithRecordings('speaking_timer_expired');
+    }, remaining * 1000);
+  }
+
+  // ---- Per-question prep phase ----
+  // Question shown → 1:00 prep countdown → at 0:00, recording auto-starts.
+  // Start button is hidden in the template; the candidate has no manual
+  // "begin recording" action.
+  private startPrepPhase(): void {
+    this.phase.set('prep');
+    this.timerText.set('⏱  PREP: ' + this.timer.formatTime(PREP_SECONDS));
+    this.timerState.set('normal');
+    this.recStatus.set(
+      'Read the question and gather your thoughts. Recording starts when this timer hits zero.'
+    );
+    this.recStatusKind.set('idle');
+
+    if (this.prepTimer) this.prepTimer.stop();
+    this.prepTimer = this.timer.start(
+      PREP_SECONDS,
+      (rem: number) => {
+        this.timerText.set('⏱  PREP: ' + this.timer.formatTime(rem));
+        const cls = this.timer.thresholdClass(rem, 15, 5);
+        if (cls === 'danger') {
+          this.timerState.set('danger');
+        } else if (cls === 'warning') {
+          this.timerState.set('warning');
+        } else {
+          this.timerState.set('normal');
+        }
+      },
+      () => {
+        this.prepTimer = null;
+        this.startRecording();
+      }
+    );
+  }
+
+  // Auto-called at the end of the prep phase. The candidate has no manual
+  // "Start recording" action — the START button is hidden in the template.
+  private async startRecording(): Promise<void> {
     try {
       this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      this.recStatus.set('✗ Microphone permission denied');
+      this.recStatus.set('✗ Microphone permission denied. Cannot record.');
       this.recStatusKind.set('error');
       return;
     }
@@ -223,6 +355,7 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     this.mediaRecorder.onstop = () => this.onRecorderStopped();
     this.mediaRecorder.start();
 
+    this.phase.set('recording');
     this.recording.set(true);
     this.hasPlayback.set(false);
     if (this.playbackUrl()) {
@@ -230,15 +363,15 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
       this.playbackUrl.set('');
     }
     this.recStatusKind.set('recording');
-    this.recStatus.set(`RECORDING  •  00:00 / ${this.timer.formatTime(this.perTopicSeconds())}`);
+    this.recStatus.set(`RECORDING  •  00:00 / ${this.timer.formatTime(RECORD_SECONDS)}`);
 
     this.countdown = this.timer.start(
-      this.perTopicSeconds(),
+      RECORD_SECONDS,
       (rem: number) => {
-        const elapsed = this.perTopicSeconds() - rem;
-        this.timerText.set('⏱  ' + this.timer.formatTime(rem));
+        const elapsed = RECORD_SECONDS - rem;
+        this.timerText.set('⏱  RECORDING: ' + this.timer.formatTime(rem));
         this.recStatus.set(
-          `RECORDING  •  ${this.timer.formatTime(elapsed)} / ${this.timer.formatTime(this.perTopicSeconds())}`
+          `RECORDING  •  ${this.timer.formatTime(elapsed)} / ${this.timer.formatTime(RECORD_SECONDS)}`
         );
         const cls = this.timer.thresholdClass(rem, 30, 10);
         if (cls === 'danger') {
@@ -274,6 +407,10 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
   }
 
   private cleanupRecording(): void {
+    if (this.prepTimer) {
+      this.prepTimer.stop();
+      this.prepTimer = null;
+    }
     if (this.countdown) {
       this.countdown.stop();
       this.countdown = null;
@@ -305,6 +442,7 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     const topic = this.topics()[this.currentTopicIdx()];
     if (!topic) {
       this.cleanupRecording();
+      this.phase.set('idle');
       return;
     }
 
@@ -325,6 +463,10 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     this.recStatusKind.set('saved');
 
     this.cleanupRecording();
+    // Recording is finalized — return to idle so the topic-hint stops
+    // saying "Speak now" and reflects "Recording complete." until the
+    // candidate clicks Next (which will move to 'prep' for the next Q).
+    this.phase.set('idle');
   }
 
   onNextTopic(): void {
@@ -337,10 +479,9 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
       URL.revokeObjectURL(this.playbackUrl());
       this.playbackUrl.set('');
     }
-    this.recStatus.set('Ready to record');
-    this.recStatusKind.set('idle');
-    this.timerText.set('⏱  ' + this.timer.formatTime(this.perTopicSeconds()));
-    this.timerState.set('normal');
+    // Kick off the next question's mandatory prep phase. Recording for
+    // this question will auto-start at 0:00 of prep — no Start button.
+    this.startPrepPhase();
   }
 
   private animateWaveform(): void {
@@ -362,6 +503,10 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async onFinish(): Promise<void> {
+    // If the section safety net or tab-switch handler is already mid-submit,
+    // bail out quietly — the auto-submit overlay is already on screen.
+    if (this.isAutoSubmitting) return;
+
     const total = this.topics().length;
     const recCount = this.recordings().length;
 
@@ -379,6 +524,13 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     );
     if (!ok) return;
 
+    // Final guard — modal awaits give the section timer a chance to fire
+    // between the confirm dialog opening and the user clicking Submit Test.
+    if (this.isAutoSubmitting) return;
+
+    // Claim the race guard so the section timer cannot fire mid-POST and
+    // attempt a duplicate submission.
+    this.isAutoSubmitting = true;
     this.submitting.set(true);
 
     try {
@@ -391,7 +543,9 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
       this.store.clearTestSession();
       this.router.navigate(['/submitted']);
     } catch (err) {
+      // Release both guards on failure so the candidate can retry.
       this.submitting.set(false);
+      this.isAutoSubmitting = false;
       const msg = (err as ApiError)?.message ?? 'Unknown error';
       await this.modal.alert(
         `Could not submit your test: ${msg}\n\nPlease check your connection and try again.`,
@@ -400,7 +554,7 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
-  private buildSubmitFormData(submissionReason: 'candidate_finished' | 'tab_switch_termination'): FormData {
+  private buildSubmitFormData(submissionReason: SpeakingSubmitReason): FormData {
     const fd = new FormData();
     const recs = this.recordings();
     fd.append('answers', JSON.stringify(this.store.getReadingAnswers()));
@@ -419,16 +573,36 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     return fd;
   }
 
-  private async handleTerminate(): Promise<void> {
+  /**
+   * Handle 3-strike tab-switch termination. Captures any in-progress audio
+   * blob first, then submits with reason='tab_switch_termination'.
+   */
+  private handleTerminate(): Promise<void> {
+    return this.autoSubmitWithRecordings('tab_switch_termination');
+  }
+
+  /**
+   * Generic auto-submit path used by both the 3-strike tab termination AND
+   * the speaking section's 10-min safety-net timer. Captures any in-progress
+   * recording first (so the partial audio is included), then POSTs with the
+   * appropriate submission_reason. Race guard prevents the section timer
+   * and tab-switch handler from both firing.
+   */
+  private async autoSubmitWithRecordings(reason: SpeakingSubmitReason): Promise<void> {
+    if (this.isAutoSubmitting) return;
+    this.isAutoSubmitting = true;
+
     if (this.recording()) {
       this.onStop();
+      // Wait briefly for MediaRecorder.onstop -> handleStopped to flush
+      // the final chunk into recordings[] before we build the FormData.
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    this.showTerminationOverlay();
+    this.showTerminationOverlay(reason);
 
     try {
-      const fd = this.buildSubmitFormData('tab_switch_termination');
+      const fd = this.buildSubmitFormData(reason);
       const res = await firstValueFrom(this.api.post<SubmitResponse>('/api/submit', fd));
       if (res?.ref_id) {
         this.store.setRefId(res.ref_id);
@@ -437,15 +611,18 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
       this.store.clearTestSession();
       this.router.navigate(['/submitted']);
     } catch (err) {
-      console.error('[speaking-terminate] submission failed:', err);
+      console.error('[speaking-autosubmit] submission failed:', err);
       this.setOverlayMessage(
         'Submission could not be completed. Please contact your HR manager.'
       );
     }
   }
 
-  private showTerminationOverlay(): void {
+  private showTerminationOverlay(reason: SpeakingSubmitReason): void {
     if (document.getElementById('terminationOverlay')) return;
+    const reasonText = reason === 'tab_switch_termination'
+      ? 'Your test has been terminated due to repeated tab switches.'
+      : 'Your test has ended because the time limit was reached.';
     const overlay = document.createElement('div');
     overlay.id = 'terminationOverlay';
     overlay.style.cssText = `
@@ -460,7 +637,7 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
       <div style="font-size: 64px; margin-bottom: 16px;">⏹</div>
       <h1 style="font-size: 28px; margin-bottom: 12px;">Test Ended</h1>
       <p style="font-size: 16px; max-width: 480px; line-height: 1.5; margin-bottom: 24px;">
-        Your test has been terminated due to repeated tab switches.
+        ${reasonText}
         We are submitting the data you completed so far.
       </p>
       <div id="termSpinnerMsg" style="font-size: 14px; opacity: 0.85;">
@@ -475,16 +652,9 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
     if (el) el.textContent = text;
   }
 
-  async onBack(): Promise<void> {
-    const ok = await this.modal.confirm(
-      'Going back to Writing will discard any recordings you made on this section. Continue?',
-      { okText: 'Discard & Go Back', cancelText: 'Stay Here', dangerous: true }
-    );
-    if (!ok) return;
-    this.cleanupRecording();
-    this.recordings.set([]);
-    this.router.navigate(['/writing']);
-  }
+  // Note: the onBack() handler that used to live here was removed along with
+  // its UI button. Backward navigation between test sections is blocked by
+  // design — see ngOnInit's popstate guard.
 
   trackByIndex = (i: number) => i;
 }

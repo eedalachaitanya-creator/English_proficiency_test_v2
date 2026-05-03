@@ -26,7 +26,8 @@ import { Footer } from '../../shared/components/footer/footer';
  * - 30-minute countdown via TimerService.startFromDeadline so the deadline
  *   persists in sessionStorage and back-and-forward navigation does not reset.
  * - Persists each answer as the candidate clicks (sessionStorage 'readingAnswers').
- * - On timer expiry: marks readingTimeUp, navigates to /writing.
+ * - On timer expiry: auto-submits the whole test via ForceSubmitService
+ *   (per-section auto-submit; no spillover into subsequent sections).
  * - On 3 tab switches: ForceSubmitService takes over.
  * - Continue button: warns if anything unanswered, then navigates to /writing.
  *
@@ -132,7 +133,7 @@ export class Reading implements OnInit, OnDestroy {
           this.countdown.stop();
           this.countdown = null;
         }
-        this.forceSubmit.terminateAndSubmit();
+        this.forceSubmit.terminateAndSubmit('tab_switch_termination');
       })
     );
 
@@ -161,11 +162,11 @@ export class Reading implements OnInit, OnDestroy {
       this.store.setReadingDeadline(deadline);
     }
 
-    // Already expired? Bounce straight to writing.
+    // Already expired? Auto-submit the test (per-section auto-submit, no
+    // spillover into the next section). Same fate as the on-expire handler.
     const initialRemaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
     if (initialRemaining === 0) {
-      this.store.setReadingTimeUp(true);
-      this.router.navigate(['/writing']);
+      this.forceSubmit.terminateAndSubmit('reading_timer_expired');
       return;
     }
 
@@ -183,8 +184,9 @@ export class Reading implements OnInit, OnDestroy {
         }
       },
       () => {
-        this.store.setReadingTimeUp(true);
-        this.router.navigate(['/writing']);
+        // Reading countdown hit zero — auto-submit the test (per-section
+        // auto-submit, no spillover into the next section).
+        this.forceSubmit.terminateAndSubmit('reading_timer_expired');
       }
     );
   }

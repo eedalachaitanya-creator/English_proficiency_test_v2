@@ -22,7 +22,9 @@
   <main class="writing-page">
 
     <div class="section-header">
-      <button type="button" class="link-button" (click)="onBack()">← Back to Reading</button>
+      <!-- "Back to Reading" button intentionally removed: backward navigation
+           between test sections is blocked by design. The browser back button
+           is also blocked via a popstate guard in writing.ts. -->
       <h1>WRITING  •  Essay</h1>
       <div class="word-counter" [class.under]="wordCountStatus() === 'under'"
                                  [class.over]="wordCountStatus() === 'over'"
@@ -42,8 +44,16 @@
       placeholder="Type your essay here. Aim for a balanced argument with a clear introduction, body, and conclusion."
       [ngModel]="essay()"
       (ngModelChange)="onEssayChange($event)"
+      (paste)="onPaste($event)"
+      (drop)="onDrop($event)"
+      (dragover)="onDragOver($event)"
       autofocus>
     </textarea>
+    @if (pasteWarning()) {
+      <div style="color: crimson; font-size: 13px; margin-top: 6px; font-weight: 600;">
+        Paste is disabled for this test. Please type your essay.
+      </div>
+    }
 
     <div class="writing-footer">
       <span class="text-muted" style="font-size: 13px;">

@@ -69,14 +69,6 @@ export class StoreService {
     this.set('readingDeadline', value);
   }
 
-  /** Reading-time-up flag — set by the timer's onExpire callback. */
-  getReadingTimeUp(): boolean {
-    return this.get<boolean>('readingTimeUp') === true;
-  }
-  setReadingTimeUp(value: boolean): void {
-    this.set('readingTimeUp', value);
-  }
-
   /** The candidate's essay text. Auto-saved as they type. */
   getWritingEssay(): string {
     return this.get<string>('writingEssay', '') ?? '';
@@ -94,12 +86,17 @@ export class StoreService {
     this.set('writingDeadline', value);
   }
 
-  /** Writing-time-up flag. */
-  getWritingTimeUp(): boolean {
-    return this.get<boolean>('writingTimeUp') === true;
+  /**
+   * Absolute deadline (ms since epoch) for the speaking section's 10-min
+   * safety-net timer. Survives page reload so a back-then-forward bounce
+   * does not reset it.
+   */
+  getSpeakingSectionDeadline(): number | null {
+    const v = this.get<number>('speakingSectionDeadline');
+    return typeof v === 'number' ? v : null;
   }
-  setWritingTimeUp(value: boolean): void {
-    this.set('writingTimeUp', value);
+  setSpeakingSectionDeadline(value: number): void {
+    this.set('speakingSectionDeadline', value);
   }
 
   /** Server-issued submission reference ID. Set on submit, read by submitted page. */
@@ -120,10 +117,9 @@ export class StoreService {
     this.remove('testContent');
     this.remove('readingAnswers');
     this.remove('readingDeadline');
-    this.remove('readingTimeUp');
     this.remove('writingEssay');
     this.remove('writingDeadline');
-    this.remove('writingTimeUp');
+    this.remove('speakingSectionDeadline');
     // Note: refId stays — the submitted page still needs it to display.
   }
 }

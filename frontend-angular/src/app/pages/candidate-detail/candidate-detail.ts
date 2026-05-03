@@ -322,7 +322,21 @@ export class CandidateDetail implements OnInit {
     breakdown: Record<string, number | null> | null
   ): Array<{ key: string; value: number | null }> {
     if (!breakdown) return [];
-    return Object.entries(breakdown).map(([key, value]) => ({ key, value }));
+    return Object.entries(breakdown).map(([key, value]) => ({
+      key: this.humanizeKey(key),
+      value,
+    }));
+  }
+
+  /**
+   * Convert a snake_case rubric key (e.g. "professional_communication") into
+   * a human-readable label ("Professional Communication") for display.
+   * Mirrors the legacy hr.js helper of the same name.
+   */
+  private humanizeKey(k: string): string {
+    return String(k)
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   audioUrl(audioId: number): string {
