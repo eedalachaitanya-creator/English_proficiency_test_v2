@@ -45,15 +45,18 @@ export class TimerService {
   }
 
   /**
-   * Start a countdown that ticks once per second.
+   * Start a countdown that ticks roughly once per second.
+   *
+   * Internally a thin wrapper around startFromDeadline — both forms use
+   * the same wall-clock-aware tick loop so they behave identically when
+   * the tab is hidden.
    *
    * @param totalSeconds Initial duration. The first onTick fires immediately
    *                     with this value, then once per second.
-   * @param onTick      Called every second with the remaining seconds. Use
-   *                    this to update the timer DOM and toggle warning/danger
-   *                    classes. Component should manage its own NgZone if
-   *                    UI updates need to trigger change detection — Angular's
-   *                    setInterval does this automatically.
+   * @param onTick      Called with the remaining seconds. Each tick reads
+   *                    the wall clock; if the browser throttles setInterval
+   *                    while the tab is hidden, the next tick still shows
+   *                    the correct remaining time (no "free" time accrues).
    * @param onExpire    Called once when the countdown reaches 0.
    *                    NOT called if stop() is invoked before expiry.
    */
@@ -62,36 +65,8 @@ export class TimerService {
     onTick: (remaining: number) => void,
     onExpire: () => void
   ): TimerHandle {
-    let remaining = Math.max(0, Math.floor(totalSeconds));
-    let stopped = false;
-
-    // Fire the first tick immediately so the timer label doesn't show
-    // a stale value for the first second.
-    onTick(remaining);
-
-    if (remaining <= 0) {
-      onExpire();
-      return { stop: () => { stopped = true; } };
-    }
-
-    const intervalId = setInterval(() => {
-      if (stopped) return;
-      remaining -= 1;
-      onTick(remaining);
-      if (remaining <= 0) {
-        clearInterval(intervalId);
-        stopped = true;
-        onExpire();
-      }
-    }, 1000);
-
-    return {
-      stop: () => {
-        if (stopped) return;
-        stopped = true;
-        clearInterval(intervalId);
-      },
-    };
+    const deadlineMs = Date.now() + Math.max(0, Math.floor(totalSeconds)) * 1000;
+    return this.startFromDeadline(deadlineMs, onTick, onExpire);
   }
 
   /**
@@ -99,12 +74,21 @@ export class TimerService {
    *
    * This is the "do-not-reset-on-navigation" mode used by the test pages.
    * The deadline lives in sessionStorage; on every page entry we compute
-   * `Math.floor((deadline - Date.now()) / 1000)` and start a timer for
-   * exactly that long.
+   * remaining from the deadline and start a timer.
    *
    *   const ms = Date.now() + 30 * 60 * 1000;        // 30 min from now
    *   store.setReadingDeadline(ms);
    *   timer.startFromDeadline(ms, onTick, onExpire);
+   *
+   * Wall-clock-aware: every tick recomputes `(deadline - Date.now()) / 1000`
+   * rather than decrementing a counter. This means even if the browser
+   * throttles setInterval in a hidden tab (Chrome's intensive throttling
+   * fires only once per minute after 5 min of being hidden), the tick that
+   * does fire shows the correct remaining time. Switching tabs no longer
+   * gives the candidate "free" exam time. The visibilitychange listener
+   * also forces an immediate tick when the tab becomes visible again so
+   * the displayed value snaps to the correct wall-clock value instead of
+   * lagging until the next setInterval fires.
    *
    * If the deadline has already passed (e.g., candidate left the tab open
    * for too long), onExpire is called immediately and the returned handle
@@ -115,8 +99,56 @@ export class TimerService {
     onTick: (remaining: number) => void,
     onExpire: () => void
   ): TimerHandle {
-    const remaining = Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000));
-    return this.start(remaining, onTick, onExpire);
+    let stopped = false;
+    let expired = false;
+
+    const computeRemaining = (): number =>
+      Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000));
+
+    const tick = (): void => {
+      if (stopped || expired) return;
+      const remaining = computeRemaining();
+      onTick(remaining);
+      if (remaining <= 0) {
+        expired = true;
+        cleanup();
+        onExpire();
+      }
+    };
+
+    // Fire the first tick immediately so the timer label doesn't show
+    // a stale value for the first second.
+    onTick(computeRemaining());
+
+    if (computeRemaining() <= 0) {
+      expired = true;
+      onExpire();
+      return { stop: () => { stopped = true; } };
+    }
+
+    const intervalId = setInterval(tick, 1000);
+
+    // When the tab returns to the foreground, force an immediate tick so
+    // the displayed value reflects the wall clock — without this, the
+    // user sees the throttled-stale value for up to ~1 minute (until the
+    // throttled setInterval next fires).
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    const cleanup = (): void => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+
+    return {
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        cleanup();
+      },
+    };
   }
 
   /**
