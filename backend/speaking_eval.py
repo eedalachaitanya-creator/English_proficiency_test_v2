@@ -89,6 +89,106 @@ assert abs(sum(RUBRIC_WEIGHTS.values()) - 1.0) < 1e-9, "Rubric weights must sum 
 # Audio shorter than this is treated as "no real attempt" — all dimensions = 0.
 MIN_AUDIO_SECONDS = 5.0
 
+# Known Whisper hallucination strings.
+#
+# Whisper-1 has a documented tendency to "hallucinate" generic text when given
+# silent audio, background noise, or audio with no clear speech. The model
+# was trained on millions of hours of transcribed video including subtitles
+# and end-credit text, so on silence it tends to produce strings that look
+# like subtitle artefacts.
+#
+# When we see one of these as the ENTIRE transcript (or substantially the
+# whole transcript), it means the candidate didn't actually speak — they
+# recorded silence or background noise. We should treat that the same as
+# the short-audio path: zero the dimensions, exclude from GPT-4o grading.
+#
+# This list is conservative: we only match when the WHOLE transcript is one
+# of these phrases, not when the phrase appears within a longer real
+# transcript. A real candidate saying "Thanks for watching" mid-answer
+# would still be graded normally.
+WHISPER_HALLUCINATIONS = {
+    "transcribed by https://otter.ai",
+    "transcribed by otter.ai",
+    "subtitles by the amara.org community",
+    "thanks for watching",
+    "thanks for watching!",
+    "thank you for watching",
+    "thank you for watching.",
+    "thank you.",
+    "thank you",
+    "subtitles by",
+    "subscribe to my channel",
+    "[music]",
+    "[applause]",
+    "[no audio]",
+    ".",
+    "you",
+    "bye",
+    "bye.",
+    "okay",
+    "okay.",
+}
+
+# Substring patterns from Whisper's prompt-echo hallucination.
+#
+# When Whisper is given silent audio along with the disfluency context prompt
+# we send (the "this is a spontaneous spoken response..." string near the top
+# of transcribe_with_whisper), it sometimes just transcribes the PROMPT BACK
+# as the audio's content. Real example we caught in production:
+#   "This is a spontaneous spoken response from an English assessment test.
+#    It may contain hesitation sounds like um, uh, umm, ahh, hmm, erm, mhm,
+#    and self-corrections. This is a spontaneous spoken response from an
+#    English assessment test."
+#
+# These phrases come straight from our prompt and a real candidate would
+# never use them in an answer. Substring match (not exact) because Whisper
+# sometimes echoes a fragment, not the whole prompt verbatim.
+WHISPER_PROMPT_ECHO_FRAGMENTS = (
+    "spontaneous spoken response",
+    "may contain hesitation sounds",
+    "english assessment test",
+)
+
+
+def _is_whisper_hallucination(text: str) -> bool:
+    """
+    Return True if `text` looks like a Whisper hallucination on silence.
+
+    Three layers of detection:
+
+      1. Empty or near-empty (<= 3 chars after stripping). Catches "you",
+         ".", "" — even a one-word real answer would produce more text.
+
+      2. Exact match against WHISPER_HALLUCINATIONS. Catches the common
+         subtitle-style artefacts like "Transcribed by https://otter.ai".
+
+      3. Substring match against WHISPER_PROMPT_ECHO_FRAGMENTS. Catches
+         the case where Whisper echoes our own prompt back (real captured
+         example was 234 chars long, all prompt-echo, scored 0/0/0/0/13
+         before this guard caught it).
+
+    A real candidate's answer that *contains* one of the EXACT-MATCH
+    phrases as a substring is NOT flagged. But the prompt-echo fragments
+    are distinctive enough ("spontaneous spoken response", "hesitation
+    sounds") that any transcript containing them is almost certainly
+    a hallucination — a real candidate answering the speaking questions
+    wouldn't use this internal-instruction phrasing.
+    """
+    if not text:
+        return True
+    normalized = text.strip().lower()
+    if len(normalized) <= 3:
+        return True
+    if normalized in WHISPER_HALLUCINATIONS:
+        return True
+    # Prompt-echo: even a single fragment match is enough. The fragments
+    # are unique to our prompt — no real candidate would use them.
+    for fragment in WHISPER_PROMPT_ECHO_FRAGMENTS:
+        if fragment in normalized:
+            return True
+    return False
+
+
 # Whisper expects max 25MB. We don't expect anywhere near that for 60-90s of speech,
 # but cap defensively.
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
@@ -870,6 +970,36 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
         if duration < MIN_AUDIO_SECONDS:
             dbg("guard", f"audio too short ({duration:.1f}s < {MIN_AUDIO_SECONDS}s) — zeroing all dimensions for this Q")
             failure_notes.append(f"Question {rec.id}: audio too short ({duration:.1f}s)")
+            # Blank the transcript at the LAST index so GPT-4o doesn't grade
+            # whatever Whisper hallucinated on the silence (e.g.
+            # "Transcribed by https://otter.ai"). Before this fix the per-Q
+            # dimensions were zeroed but the hallucinated transcript still
+            # got passed to GPT-4o for grammar/vocab grading.
+            transcripts[-1] = ""
+            rec.transcript = ""
+            per_q_pron.append(0)
+            per_q_fluency.append(0)
+            per_q_confidence.append(0)
+            continue
+
+        # Whisper hallucination guard — catches silent-but-long recordings.
+        #
+        # The MIN_AUDIO_SECONDS check above only catches recordings under 5s.
+        # A candidate who records 30 seconds of silence passes that gate, but
+        # Whisper transcribes the silence as something like
+        # "Transcribed by https://otter.ai" — a known training-data artefact.
+        # Without this guard, that hallucination gets sent to GPT-4o, which
+        # cheerfully scores it 67 grammar / 65 vocabulary because the string
+        # IS grammatically valid. The candidate ends up with a non-zero
+        # speaking score for having recorded background noise.
+        #
+        # We blank the transcript and zero the per-Q dimensions, same shape
+        # as the short-audio path.
+        if _is_whisper_hallucination(text):
+            dbg("guard", f"Whisper hallucination detected for Q{q_idx}: {text!r} — zeroing all dimensions for this Q")
+            failure_notes.append(f"Question {rec.id}: no usable speech detected (transcript was a Whisper hallucination)")
+            transcripts[-1] = ""
+            rec.transcript = ""
             per_q_pron.append(0)
             per_q_fluency.append(0)
             per_q_confidence.append(0)
@@ -884,6 +1014,10 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
             failure_notes.append(
                 f"Question {rec.id}: detected language '{whisper_result['language']}' (expected English)"
             )
+            # Same fix as above — exclude the (foreign-language) transcript
+            # from GPT-4o grammar/vocab grading.
+            transcripts[-1] = ""
+            rec.transcript = ""
             per_q_pron.append(0)
             per_q_fluency.append(0)
             per_q_confidence.append(0)
