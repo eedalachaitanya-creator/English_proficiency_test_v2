@@ -197,6 +197,22 @@ def verify_code(
     # Active checks (expired, already submitted)
     _check_invitation_active(inv)
 
+    # Once the test has been started, the URL is "consumed" — the candidate
+    # cannot reopen the link to start over (or even resume from a fresh
+    # browser). In-session continuation is unaffected because that path
+    # uses the session cookie set on first entry, not this endpoint. A
+    # candidate who experienced a real technical failure must contact HR
+    # to request a fresh invitation.
+    if inv.started_at is not None:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "This test has already been started and cannot be reopened. "
+                "If you experienced a technical issue, please contact your "
+                "HR manager to request a new invitation."
+            ),
+        )
+
     # Locked-out check — refuse before checking the code
     if inv.code_locked:
         raise HTTPException(
