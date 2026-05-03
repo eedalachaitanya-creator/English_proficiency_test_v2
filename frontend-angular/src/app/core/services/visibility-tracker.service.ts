@@ -36,9 +36,19 @@ export class VisibilityTrackerService {
 
   private readonly MIN_SWITCH_SECONDS = 2;
   private readonly MAX_STRIKES = 3;
+  /**
+   * If a single tab-switch lasts longer than this, terminate immediately
+   * — independent of the strike count. Catches the "switch once, stay
+   * away to look up answers" cheat that the 3-strike count alone doesn't
+   * stop. Uses setTimeout so termination fires while the candidate is
+   * still away (their next return will land on /submitted).
+   */
+  private readonly MAX_SINGLE_SWITCH_SECONDS = 30;
   private readonly STORAGE_KEY = 'visibilityStats';
 
   private hiddenSince: number | null = null;
+  /** setTimeout id for the 30-second long-away termination; null when not pending. */
+  private awayTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private terminated = false;
   private listening = false;
   private boundHandler: (() => void) | null = null;
@@ -76,6 +86,7 @@ export class VisibilityTrackerService {
       window.removeEventListener('pagehide', this.boundPagehide);
       this.boundPagehide = null;
     }
+    this.clearAwayTimeout();
     this.listening = false;
   }
 
@@ -86,6 +97,7 @@ export class VisibilityTrackerService {
   reset(): void {
     this.stop();
     this.hiddenSince = null;
+    this.clearAwayTimeout();
     this.terminated = false;
     this.count.set(0);
     try {
@@ -110,9 +122,26 @@ export class VisibilityTrackerService {
 
     if (document.hidden) {
       this.hiddenSince = Date.now();
+      // Schedule a long-away termination — fires while the candidate is
+      // still on another tab / browser. Cleared if they return in time.
+      this.awayTimeoutId = setTimeout(() => {
+        this.awayTimeoutId = null;
+        if (this.terminated || this.hiddenSince === null) return;
+        const elapsedSec = Math.round((Date.now() - this.hiddenSince) / 1000);
+        const stats = this.loadStats();
+        stats.count += 1;
+        stats.totalSeconds += elapsedSec;
+        this.saveStats(stats);
+        this.count.set(stats.count);
+        this.terminated = true;
+        this.hiddenSince = null;
+        this.zone.run(() => this.terminate$.next(stats));
+      }, this.MAX_SINGLE_SWITCH_SECONDS * 1000);
       return;
     }
 
+    // Candidate returned. Cancel the pending long-away termination.
+    this.clearAwayTimeout();
     if (this.hiddenSince === null) return;
     const elapsedMs = Date.now() - this.hiddenSince;
     this.hiddenSince = null;
@@ -139,6 +168,13 @@ export class VisibilityTrackerService {
       this.zone.run(() =>
         this.firstWarning$.next({ durationSeconds: elapsedSec, count: stats.count })
       );
+    }
+  }
+
+  private clearAwayTimeout(): void {
+    if (this.awayTimeoutId !== null) {
+      clearTimeout(this.awayTimeoutId);
+      this.awayTimeoutId = null;
     }
   }
 
