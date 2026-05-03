@@ -138,10 +138,12 @@ def derive_rating(total_score: int) -> str:
     return "not_recommended"
 
 
-# Section weights (must sum to 1.0)
-W_READING = 0.25
-W_WRITING = 0.35
-W_SPEAKING = 0.40
+
+# Section weights (must sum to 1.0). Equal weighting across all three sections.
+# Use 1/3 (not 0.3333) so floating-point round-off does not push the sum off 1.0.
+W_READING = 1 / 3
+W_WRITING = 1 / 3
+W_SPEAKING = 1 / 3
 
 
 def compute_total(
@@ -150,7 +152,7 @@ def compute_total(
     speaking_score: int | None,
 ) -> int:
     """
-    Weighted total: 25% reading + 35% writing + 40% speaking.
+    Weighted total: equal 33.33% weighting across reading, writing, and speaking.
     If a section isn't scored yet (None), its weight is redistributed proportionally
     across whatever IS scored, so the displayed total reflects the available data.
     """
