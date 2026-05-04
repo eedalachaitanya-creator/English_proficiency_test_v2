@@ -7,7 +7,7 @@ what fields to expose to the client (e.g., never expose `correct_answer`).
 """
 from datetime import datetime
 from typing import Literal, Optional
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 # ============================================================
@@ -55,6 +55,14 @@ class InviteCreateRequest(BaseModel):
     # the wrong zone. Validated against ALLOWED_TIMEZONES below.
     timezone: str = Field(min_length=1, max_length=64)
 
+    # Per-invitation section selection. HR picks any non-empty subset of the
+    # three sections. Defaults to all-true so older clients that don't send
+    # these fields preserve pre-feature behavior. See
+    # docs/superpowers/specs/2026-05-04-per-invitation-section-selection-design.md.
+    include_reading: bool = True
+    include_writing: bool = True
+    include_speaking: bool = True
+
     @field_validator("timezone")
     @classmethod
     def _check_timezone(cls, v: str) -> str:
@@ -63,6 +71,16 @@ class InviteCreateRequest(BaseModel):
                 f"timezone must be one of {sorted(ALLOWED_TIMEZONES)}. Got: {v!r}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _check_at_least_one_section(self) -> "InviteCreateRequest":
+        """A test with zero sections is meaningless. Reject explicitly so HR
+        gets a clear error instead of accidentally generating a no-op URL."""
+        if not (self.include_reading or self.include_writing or self.include_speaking):
+            raise ValueError(
+                "At least one section (reading, writing, or speaking) must be selected."
+            )
+        return self
 
 
 class InviteCreateResponse(BaseModel):
@@ -192,6 +210,14 @@ class WritingTopicPublic(BaseModel):
     max_words: int
 
 
+class SectionFlags(BaseModel):
+    """Which sections this candidate's exam includes. The frontend uses
+    these to drive routing — sections set to False are skipped entirely."""
+    reading: bool
+    writing: bool
+    speaking: bool
+
+
 class TestContent(BaseModel):
     candidate_name: str
     difficulty: str
@@ -202,10 +228,14 @@ class TestContent(BaseModel):
     # schedules a setTimeout in each test page so the test auto-submits at the
     # window end even if the candidate is mid-section. See spec.
     valid_until_iso: str
-    passage: PassagePublic                      # the assigned passage
-    questions: list[QuestionPublic]             # the 15 questions (RC + grammar + vocab)
-    writing_topic: WritingTopicPublic           # the assigned essay prompt
-    speaking_topics: list[SpeakingTopicPublic]  # the 3 assigned speaking topics
+    # Per-invitation section selection. The frontend reads this to decide
+    # which section pages to walk the candidate through. For excluded
+    # sections the corresponding content fields below come back null/empty.
+    sections: SectionFlags
+    passage: Optional[PassagePublic] = None              # null when reading is excluded
+    questions: list[QuestionPublic] = []                 # empty when reading is excluded
+    writing_topic: Optional[WritingTopicPublic] = None   # null when writing is excluded
+    speaking_topics: list[SpeakingTopicPublic] = []      # empty when speaking is excluded
 
 
 # ============================================================

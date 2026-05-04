@@ -22,6 +22,7 @@ from database import get_db
 from models import Invitation, Passage, Question, SpeakingTopic, WritingTopic
 from schemas import (
     TestContent,
+    SectionFlags,
     PassagePublic,
     QuestionPublic,
     SpeakingTopicPublic,
@@ -80,83 +81,89 @@ def _check_invitation_active(inv: Invitation):
 
 def _assign_content(inv: Invitation, db: Session):
     """
-    First-visit content lock-in. Picks 1 passage, 15 questions
-    (RC about that passage + grammar/vocab fill-in), and 3 speaking topics —
-    all matching the candidate's difficulty. Stores the IDs on the Invitation row.
+    First-visit content lock-in. For each section the HR included in this
+    invitation, picks the matching content (passage + 15 questions for
+    reading, one essay prompt for writing, 3 prompts for speaking).
+    Excluded sections leave their assignment fields as None — the explicit
+    "this section was not part of the test" signal that scoring + the
+    frontend both rely on.
     """
-    # 1) Pick a random passage of matching difficulty
-    passages = db.query(Passage).filter(Passage.difficulty == inv.difficulty).all()
-    if not passages:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No passages have been seeded for difficulty='{inv.difficulty}'. "
-                   f"Run seed.py first.",
-        )
-    passage = random.choice(passages)
-    inv.passage_id = passage.id
+    # ---- Reading: passage + question set ----
+    if inv.include_reading:
+        passages = db.query(Passage).filter(Passage.difficulty == inv.difficulty).all()
+        if not passages:
+            raise HTTPException(
+                status_code=500,
+                detail=f"No passages have been seeded for difficulty='{inv.difficulty}'. "
+                       f"Run seed.py first.",
+            )
+        passage = random.choice(passages)
+        inv.passage_id = passage.id
 
-    # 2) RC questions tied to this passage (all of them — typically 4-5)
-    rc_questions = (
-        db.query(Question)
-        .filter(
-            Question.passage_id == passage.id,
-            Question.question_type == "reading_comp",
-        )
-        .all()
-    )
-
-    # 3) Fill the rest from standalone grammar/vocab questions.
-    # If a passage somehow has more RC questions than the whole test allows,
-    # subsample so we still produce exactly WRITTEN_QUESTIONS_PER_TEST.
-    if len(rc_questions) > WRITTEN_QUESTIONS_PER_TEST:
-        rc_questions = random.sample(rc_questions, WRITTEN_QUESTIONS_PER_TEST)
-    needed = WRITTEN_QUESTIONS_PER_TEST - len(rc_questions)
-    standalone = (
-        db.query(Question)
-        .filter(
-            Question.difficulty == inv.difficulty,
-            Question.passage_id.is_(None),
-            Question.question_type.in_(["grammar", "vocabulary", "fill_blank"]),
-        )
-        .all()
-    )
-    if needed > len(standalone):
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Question bank too small for {inv.difficulty}: "
-                f"need {needed} standalone questions, have {len(standalone)}. "
-                f"Seed more questions."
-            ),
+        # RC questions tied to this passage (all of them — typically 4-5)
+        rc_questions = (
+            db.query(Question)
+            .filter(
+                Question.passage_id == passage.id,
+                Question.question_type == "reading_comp",
+            )
+            .all()
         )
 
-    selected_others = random.sample(standalone, needed)
-    selected = rc_questions + selected_others
-    random.shuffle(selected)  # interleave question types so they're not all clumped
-    inv.assigned_question_ids = [q.id for q in selected]
-
-    # 4) Speaking topics
-    topics = db.query(SpeakingTopic).filter(SpeakingTopic.difficulty == inv.difficulty).all()
-    if len(topics) < SPEAKING_QUESTIONS_PER_TEST:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Not enough speaking topics for {inv.difficulty}: "
-                f"need {SPEAKING_QUESTIONS_PER_TEST}, have {len(topics)}."
-            ),
+        # Fill the rest from standalone grammar/vocab questions.
+        # If a passage somehow has more RC questions than the whole test allows,
+        # subsample so we still produce exactly WRITTEN_QUESTIONS_PER_TEST.
+        if len(rc_questions) > WRITTEN_QUESTIONS_PER_TEST:
+            rc_questions = random.sample(rc_questions, WRITTEN_QUESTIONS_PER_TEST)
+        needed = WRITTEN_QUESTIONS_PER_TEST - len(rc_questions)
+        standalone = (
+            db.query(Question)
+            .filter(
+                Question.difficulty == inv.difficulty,
+                Question.passage_id.is_(None),
+                Question.question_type.in_(["grammar", "vocabulary", "fill_blank"]),
+            )
+            .all()
         )
-    selected_topics = random.sample(topics, SPEAKING_QUESTIONS_PER_TEST)
-    inv.assigned_topic_ids = [t.id for t in selected_topics]
+        if needed > len(standalone):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Question bank too small for {inv.difficulty}: "
+                    f"need {needed} standalone questions, have {len(standalone)}. "
+                    f"Seed more questions."
+                ),
+            )
 
-    # 5) Writing topic (one essay prompt)
-    writing_topics = db.query(WritingTopic).filter(WritingTopic.difficulty == inv.difficulty).all()
-    if not writing_topics:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No writing prompts seeded for difficulty='{inv.difficulty}'. "
-                   f"Run `alembic upgrade head` (if needed) and then `python3 seed.py`.",
-        )
-    inv.assigned_writing_topic_id = random.choice(writing_topics).id
+        selected_others = random.sample(standalone, needed)
+        selected = rc_questions + selected_others
+        random.shuffle(selected)  # interleave question types so they're not all clumped
+        inv.assigned_question_ids = [q.id for q in selected]
+
+    # ---- Speaking: 3 prompts ----
+    if inv.include_speaking:
+        topics = db.query(SpeakingTopic).filter(SpeakingTopic.difficulty == inv.difficulty).all()
+        if len(topics) < SPEAKING_QUESTIONS_PER_TEST:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Not enough speaking topics for {inv.difficulty}: "
+                    f"need {SPEAKING_QUESTIONS_PER_TEST}, have {len(topics)}."
+                ),
+            )
+        selected_topics = random.sample(topics, SPEAKING_QUESTIONS_PER_TEST)
+        inv.assigned_topic_ids = [t.id for t in selected_topics]
+
+    # ---- Writing: one essay prompt ----
+    if inv.include_writing:
+        writing_topics = db.query(WritingTopic).filter(WritingTopic.difficulty == inv.difficulty).all()
+        if not writing_topics:
+            raise HTTPException(
+                status_code=500,
+                detail=f"No writing prompts seeded for difficulty='{inv.difficulty}'. "
+                       f"Run `alembic upgrade head` (if needed) and then `python3 seed.py`.",
+            )
+        inv.assigned_writing_topic_id = random.choice(writing_topics).id
 
 
 # ------------------------------------------------------------------
@@ -287,7 +294,10 @@ def verify_code(
     # Code is correct — reset counter, lock content if first visit, set session.
     inv.failed_code_attempts = 0
 
-    if inv.assigned_question_ids is None:
+    # First-visit gate. Use started_at (rather than assigned_question_ids)
+    # because reading-excluded invitations never set assigned_question_ids,
+    # which would otherwise re-randomize writing/speaking on every visit.
+    if inv.started_at is None:
         _assign_content(inv, db)
 
     # Counter increment + first-start timestamp. start_count tracks every
@@ -337,42 +347,72 @@ def get_test_content(request: Request, db: Session = Depends(get_db)):
 
     _check_invitation_active(inv)
 
-    if inv.passage_id is None or not inv.assigned_question_ids:
-        # Should not happen — open_exam assigns these. Defensive.
-        raise HTTPException(
-            status_code=500,
-            detail="Test content not assigned. Re-open the exam URL.",
+    # Each section block is gated on inv.include_*. Excluded sections return
+    # null/empty so the frontend's per-section guards skip those routes
+    # entirely. See spec.
+
+    passage_payload = None
+    questions_payload: list[QuestionPublic] = []
+    if inv.include_reading:
+        if inv.passage_id is None or not inv.assigned_question_ids:
+            raise HTTPException(
+                status_code=500,
+                detail="Reading content not assigned. Re-open the exam URL.",
+            )
+        passage = db.query(Passage).filter(Passage.id == inv.passage_id).first()
+        qmap = {
+            q.id: q
+            for q in db.query(Question).filter(Question.id.in_(inv.assigned_question_ids)).all()
+        }
+        questions_ordered = [qmap[qid] for qid in inv.assigned_question_ids if qid in qmap]
+        passage_payload = PassagePublic(id=passage.id, title=passage.title, body=passage.body)
+        questions_payload = [
+            QuestionPublic(
+                id=q.id,
+                question_type=q.question_type,
+                stem=q.stem,
+                options=q.options,
+            )
+            for q in questions_ordered
+        ]
+
+    writing_topic_payload = None
+    if inv.include_writing:
+        writing_topic = (
+            db.query(WritingTopic).filter(WritingTopic.id == inv.assigned_writing_topic_id).first()
+            if inv.assigned_writing_topic_id else None
+        )
+        if writing_topic is None:
+            raise HTTPException(
+                status_code=500,
+                detail="No writing topic assigned. This invitation pre-dates the writing section. "
+                       "Generate a fresh invitation.",
+            )
+        writing_topic_payload = WritingTopicPublic(
+            id=writing_topic.id,
+            prompt_text=writing_topic.prompt_text,
+            min_words=writing_topic.min_words,
+            max_words=writing_topic.max_words,
         )
 
-    passage = db.query(Passage).filter(Passage.id == inv.passage_id).first()
-
-    # Load all assigned questions in one query, then re-order to match assignment
-    qmap = {
-        q.id: q
-        for q in db.query(Question).filter(Question.id.in_(inv.assigned_question_ids)).all()
-    }
-    questions_ordered = [qmap[qid] for qid in inv.assigned_question_ids if qid in qmap]
-
-    tmap = {
-        t.id: t
-        for t in db.query(SpeakingTopic)
-        .filter(SpeakingTopic.id.in_(inv.assigned_topic_ids))
-        .all()
-    }
-    topics_ordered = [tmap[tid] for tid in inv.assigned_topic_ids if tid in tmap]
-
-    # Writing topic (single, may be None for older invitations created before the
-    # writing section was added — defensive guard so we don't crash for those).
-    writing_topic = (
-        db.query(WritingTopic).filter(WritingTopic.id == inv.assigned_writing_topic_id).first()
-        if inv.assigned_writing_topic_id else None
-    )
-    if writing_topic is None:
-        raise HTTPException(
-            status_code=500,
-            detail="No writing topic assigned. This invitation pre-dates the writing section. "
-                   "Generate a fresh invitation.",
-        )
+    speaking_topics_payload: list[SpeakingTopicPublic] = []
+    if inv.include_speaking:
+        if not inv.assigned_topic_ids:
+            raise HTTPException(
+                status_code=500,
+                detail="Speaking topics not assigned. Re-open the exam URL.",
+            )
+        tmap = {
+            t.id: t
+            for t in db.query(SpeakingTopic)
+            .filter(SpeakingTopic.id.in_(inv.assigned_topic_ids))
+            .all()
+        }
+        topics_ordered = [tmap[tid] for tid in inv.assigned_topic_ids if tid in tmap]
+        speaking_topics_payload = [
+            SpeakingTopicPublic(id=t.id, prompt_text=t.prompt_text)
+            for t in topics_ordered
+        ]
 
     return TestContent(
         candidate_name=inv.candidate_name,
@@ -386,24 +426,13 @@ def get_test_content(request: Request, db: Session = Depends(get_db)):
         # ISO-8601 UTC with 'Z' suffix so the Angular frontend can `new Date(iso)`
         # and schedule the window-end setTimeout against the wall clock.
         valid_until_iso=inv.expires_at.isoformat() + "Z",
-        passage=PassagePublic(id=passage.id, title=passage.title, body=passage.body),
-        questions=[
-            QuestionPublic(
-                id=q.id,
-                question_type=q.question_type,
-                stem=q.stem,
-                options=q.options,
-            )
-            for q in questions_ordered
-        ],
-        writing_topic=WritingTopicPublic(
-            id=writing_topic.id,
-            prompt_text=writing_topic.prompt_text,
-            min_words=writing_topic.min_words,
-            max_words=writing_topic.max_words,
+        sections=SectionFlags(
+            reading=inv.include_reading,
+            writing=inv.include_writing,
+            speaking=inv.include_speaking,
         ),
-        speaking_topics=[
-            SpeakingTopicPublic(id=t.id, prompt_text=t.prompt_text)
-            for t in topics_ordered
-        ],
+        passage=passage_payload,
+        questions=questions_payload,
+        writing_topic=writing_topic_payload,
+        speaking_topics=speaking_topics_payload,
     )

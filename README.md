@@ -14,13 +14,13 @@ This document is the place to start if you're new to the repo. It covers what's 
 | Database | PostgreSQL | Same engine in dev (local) and production (Render) so no surprises |
 | ORM | SQLAlchemy 2.0 | Lets us write queries in Python instead of raw SQL |
 | Migrations | Alembic | Version-controlled schema changes; `models.py` is source of truth |
-| Frontend | Plain HTML + CSS + vanilla JavaScript | No build step. Open `.html` in a browser, it works. |
+| Frontend | Angular 21 (separate repo) | Lives at https://github.com/eedalachaitanya-creator/English_proficiency_frontend |
 | Audio capture | `MediaRecorder` browser API | Built in. No third-party library needed. |
 | Speech-to-text | OpenAI Whisper API | Transcribes candidate audio for grading |
 | Speaking scoring | OpenAI GPT-4o + Azure Speech | GPT-4o for grammar/vocab; Azure for pronunciation/fluency |
 | Writing scoring | OpenAI GPT-4o | Rubric-based grading of the essay (Task Response, Grammar, Vocabulary, Coherence) |
 
-There is no separate frontend server. FastAPI serves the static HTML files alongside the API endpoints.
+FastAPI serves the JSON API only. The Angular SPA is built and deployed independently from its own repo and reaches the backend over HTTP — `CORS_ALLOWED_ORIGINS` in `.env` controls which origins are allowed.
 
 ---
 
@@ -89,23 +89,17 @@ English_Proficiency/
 │   ├── .env.example         ← copy to .env and fill in real values
 │   └── .env                 ← real values (gitignored)
 │
-└── frontend-angular/        ← Angular SPA (HR dashboard + candidate test flow)
-    ├── src/app/pages/       ← route-level components: login, hr-dashboard, candidate-detail,
-    │                            exam-entry, instructions, reading, writing, speaking, submitted, content-*
-    ├── src/app/core/        ← services (api, auth, store, force-submit), guards, models
-    ├── src/app/shared/      ← reusable components (topnav, footer, radar-breakdown, modal)
-    ├── package.json         ← npm dependencies (Angular 21, chart.js)
-    └── dist/                ← `ng build` output; FastAPI serves this at `/` (gitignored)
 ```
 
-Build it once before starting the backend in production:
+The frontend lives in its own repository:
+**https://github.com/eedalachaitanya-creator/English_proficiency_frontend**
 
-```bash
-cd frontend-angular && npm install && ng build
-```
-
-For day-to-day development run the Angular dev server (`ng serve`, port 4200) alongside
-uvicorn (port 8000) — the Angular app proxies `/api/*` requests to the backend.
+For local development, clone both repos side-by-side. Run uvicorn on `:8000`
+from this repo and `ng serve` on `:4200` from the frontend repo. Set the
+backend's `CORS_ALLOWED_ORIGINS` to include `http://localhost:4200` (it is by
+default in development mode). For production, deploy the frontend (built with
+`ng build`) to your static host of choice (nginx, S3+CloudFront, Vercel, etc.)
+and point its `environment.prod.ts` `apiUrl` at this backend's URL.
 
 ### What each backend file does
 
@@ -124,21 +118,9 @@ uvicorn (port 8000) — the Angular app proxies `/api/*` requests to the backend
 - **`seed.py`** — Run once to populate the DB with 4 passages, 44 questions, 8 speaking topics, 6 writing prompts. `--reset` clears existing content first.
 - **`create_hr.py`** — CLI: `python create_hr.py --name X --email Y --password Z` creates an HR admin row.
 
-### What each frontend file does
+### Frontend
 
-- **`index.html`** — HR sign-in form. Posts to `/api/hr/login`, redirects to dashboard on success.
-- **`hr-dashboard.html`** — HR's home screen. KPI cards, candidate table, invite modal, candidate detail panel with audio playback.
-- **`instructions.html`** — First page candidates see after clicking their URL. Shows their name, the section breakdown, mic test button.
-- **`reading.html`** — Two-column layout: passage on the left (scrollable), 15 questions on the right. 30-minute countdown timer top-right.
-- **`writing.html`** — Essay prompt + textarea with live word counter and 20-minute timer. Auto-saves every keystroke to `sessionStorage`.
-- **`speaking.html`** — Walks the candidate through 3 speaking prompts. Records audio using the browser's MediaRecorder API, shows a live waveform.
-- **`submitted.html`** — Thank-you screen with a reference ID. No scores shown. Clears all session storage on render.
-- **`js/common.js`** — `api()` wrapper around `fetch` (handles cookies, JSON, error messages). `Modal.confirm()` / `Modal.alert()` for styled in-app dialogs. `startCountdown()` factory. `Store` (sessionStorage JSON wrapper).
-- **`js/login.js`** — HR login submit handler.
-- **`js/hr.js`** — Loads candidate list, renders KPIs and table, handles invite modal, renders detail panel with `<audio>` players and the writing essay text.
-- **`js/reading.js`** — Fetches `/api/test-content`, renders passage and questions, runs the timer (deadline persisted in `sessionStorage`), saves answers per click.
-- **`js/writing.js`** — Renders the assigned essay prompt, runs the 20-min countdown (deadline persisted), counts words live, auto-saves the essay text on every keystroke.
-- **`js/speaking.js`** — Fetches the 3 topics, captures one audio blob per topic, posts everything (MCQ answers + essay + audio) to `/api/submit` as FormData on Finish.
+The Angular SPA — HR dashboard, candidate test flow, content authoring screens — lives at **https://github.com/eedalachaitanya-creator/English_proficiency_frontend**. See that repo's README for its component layout and dev workflow.
 
 ---
 

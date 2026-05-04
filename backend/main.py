@@ -1,20 +1,21 @@
 """
-FastAPI app entry point.
+FastAPI app entry point. Serves the JSON API only; the Angular SPA lives in
+its own repo (https://github.com/eedalachaitanya-creator/English_proficiency_frontend)
+and is deployed independently.
 
 Run from inside the backend/ folder:
     uvicorn main:app --reload --port 8000
 
 Then visit http://localhost:8000/api/health to confirm the server is up.
-The Angular SPA (built into ../frontend-angular/dist) is served at the root URL.
+Cross-origin requests from the Angular dev server / production host are
+controlled by CORS_ALLOWED_ORIGINS in .env.
 """
 import os
 import warnings
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 # database.py calls load_dotenv() at import time, so env vars are populated by here.
@@ -128,27 +129,10 @@ app.include_router(submit_routes.router)
 app.include_router(hr_content_routes.router)
 
 
-# Catch-all so an unknown /api/... path returns 404 JSON instead of falling through
-# to the SPA static mount and silently returning index.html. Must come AFTER all routers.
+# Catch-all so an unknown /api/... path returns 404 JSON.
 @app.api_route(
     "/api/{full_path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
 )
 def api_not_found(full_path: str):
     raise HTTPException(status_code=404, detail=f"API endpoint not found: /api/{full_path}")
-
-
-# ------------------------------------------------------------------
-# Static frontend (mounted last so API routes take precedence)
-# ------------------------------------------------------------------
-ANGULAR_DIST = (
-    Path(__file__).resolve().parent.parent
-    / "frontend-angular" / "dist" / "frontend-angular" / "browser"
-)
-
-if ANGULAR_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(ANGULAR_DIST), html=True), name="frontend")
-    print(f"[startup] Angular SPA mounted from: {ANGULAR_DIST}")
-else:
-    print(f"[warn] Angular dist not found at {ANGULAR_DIST}")
-    print(f"[warn] Run: cd frontend-angular && ng build  before starting the backend in production")

@@ -30,11 +30,17 @@ log = logging.getLogger("scoring")
 # ------------------------------------------------------------------
 # Reading
 # ------------------------------------------------------------------
-def score_reading(inv: Invitation, db: Session) -> tuple[int, int, int]:
+def score_reading(inv: Invitation, db: Session) -> tuple[int | None, int | None, int | None]:
     """
     Compare each MCQAnswer's selected_option against the Question's correct_answer.
     Returns (score_0_to_100, num_correct, num_total).
+
+    For invitations where HR excluded reading, returns (None, None, None) so
+    compute_total() redistributes weight to only the included sections — and
+    the dashboard shows "—" rather than a misleading 0.
     """
+    if not inv.include_reading:
+        return None, None, None
     answers = db.query(MCQAnswer).filter(MCQAnswer.invitation_id == inv.id).all()
     if not answers:
         return 0, 0, len(inv.assigned_question_ids or [])
@@ -77,7 +83,13 @@ def _run_writing_eval(inv: Invitation, db: Session) -> dict:
     Try to import and run the real writing evaluator. On any unexpected
     failure, fall back to the stub so a single bad invitation doesn't
     poison the whole submission flow.
+
+    Short-circuits with all-None when HR excluded the writing section — the
+    eval can't run without an essay/topic, and compute_total() needs None
+    (not 0) so the writing weight gets redistributed.
     """
+    if not inv.include_writing:
+        return {"breakdown": None, "total": None, "feedback": None}
     try:
         from writing_eval import score_writing
         return score_writing(inv, db)
@@ -115,7 +127,13 @@ def _run_speaking_eval(inv: Invitation, db: Session) -> dict:
     Try to import and run the real speaking evaluator. On any unexpected
     failure, fall back to the stub so a single bad invitation doesn't
     poison the whole submission flow.
+
+    Short-circuits with all-None when HR excluded the speaking section — no
+    audio means no eval input, and compute_total() needs None (not 0) so
+    the speaking weight gets redistributed.
     """
+    if not inv.include_speaking:
+        return {"breakdown": None, "total": None, "feedback": None}
     try:
         from speaking_eval import score_speaking
         return score_speaking(inv, db)

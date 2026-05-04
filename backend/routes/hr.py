@@ -243,6 +243,12 @@ def create_invite(
         # always sees their original local-time window even if HR's
         # browser/preferences change between sends.
         display_timezone=payload.timezone,
+        # HR's per-invitation section selection. Schema defaults each to
+        # True so older clients that don't send these fields preserve the
+        # full-test behavior. Validator already rejected all-three-false.
+        include_reading=payload.include_reading,
+        include_writing=payload.include_writing,
+        include_speaking=payload.include_speaking,
     )
     db.add(inv)
     db.commit()
@@ -262,6 +268,9 @@ def create_invite(
         valid_until=inv.expires_at,
         hr_name=hr.name,
         display_timezone=inv.display_timezone,
+        include_reading=inv.include_reading,
+        include_writing=inv.include_writing,
+        include_speaking=inv.include_speaking,
     )
 
     # Persist the email send result so the dashboard can surface failures to HR
@@ -343,6 +352,9 @@ def regenerate_code(
         valid_until=inv.expires_at,
         hr_name=hr.name,
         display_timezone=inv.display_timezone,
+        include_reading=inv.include_reading,
+        include_writing=inv.include_writing,
+        include_speaking=inv.include_speaking,
     )
 
     # Update email tracking. Regenerate replaces the previous status entirely:
@@ -462,6 +474,9 @@ def resend_invitation_email(
         valid_until=inv.expires_at,
         hr_name=hr.name,
         display_timezone=inv.display_timezone,
+        include_reading=inv.include_reading,
+        include_writing=inv.include_writing,
+        include_speaking=inv.include_speaking,
     )
 
     # Update tracking columns (same logic as create_invite). Resend replaces

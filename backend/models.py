@@ -191,6 +191,15 @@ class Invitation(Base):
     # a valid email — it just shows the time in UTC like the old behavior.
     display_timezone = Column(String(64), default="UTC", nullable=False)
 
+    # Per-invitation section selection. HR picks at invite-creation time
+    # which sections this candidate's exam will include (any non-empty
+    # subset of reading/writing/speaking). Default True so backfilled rows
+    # behave as the old "all three sections" tests. See
+    # docs/superpowers/specs/2026-05-04-per-invitation-section-selection-design.md.
+    include_reading = Column(Boolean, default=True, nullable=False)
+    include_writing = Column(Boolean, default=True, nullable=False)
+    include_speaking = Column(Boolean, default=True, nullable=False)
+
     hr = relationship("HRAdmin", back_populates="invitations")
     passage = relationship("Passage")
     writing_topic = relationship("WritingTopic")

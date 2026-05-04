@@ -92,6 +92,9 @@ def send_invitation_email(
     valid_until,
     hr_name: str | None = None,
     display_timezone: str | None = None,
+    include_reading: bool = True,
+    include_writing: bool = True,
+    include_speaking: bool = True,
 ) -> tuple[bool, str | None]:
     """
     Send an invitation email containing the test URL and 6-digit access code.
@@ -122,6 +125,9 @@ def send_invitation_email(
         valid_until=valid_until,
         hr_name=hr_name,
         display_timezone=display_timezone,
+        include_reading=include_reading,
+        include_writing=include_writing,
+        include_speaking=include_speaking,
     )
 
     try:
@@ -162,6 +168,9 @@ def send_regenerated_code_email(
     valid_until=None,
     hr_name: str | None = None,
     display_timezone: str | None = None,
+    include_reading: bool = True,
+    include_writing: bool = True,
+    include_speaking: bool = True,
 ) -> tuple[bool, str | None]:
     """
     Send an email when HR regenerates a candidate's access code (e.g. after
@@ -187,6 +196,9 @@ def send_regenerated_code_email(
         hr_name=hr_name,
         regenerated=True,
         display_timezone=display_timezone,
+        include_reading=include_reading,
+        include_writing=include_writing,
+        include_speaking=include_speaking,
     )
 
     try:
@@ -272,6 +284,41 @@ def _format_window(valid_from: datetime, valid_until: datetime, tz_name: str) ->
     return f"{date_str} {from_time} to {until_date} {to_time} ({label})"
 
 
+_SECTION_DISPLAY_NAMES = {
+    "reading": "Reading Comprehension",
+    "writing": "Written Expression",
+    "speaking": "Communication",
+}
+
+
+def _format_included_sections(
+    include_reading: bool, include_writing: bool, include_speaking: bool
+) -> str:
+    """
+    Render the included sections as a human-readable, oxford-comma-joined
+    string for the email body. Examples:
+        all 3 → "Reading Comprehension, Written Expression, and Communication"
+        2     → "Reading Comprehension and Written Expression"
+        1     → "Reading Comprehension"
+    """
+    parts: list[str] = []
+    if include_reading:
+        parts.append(_SECTION_DISPLAY_NAMES["reading"])
+    if include_writing:
+        parts.append(_SECTION_DISPLAY_NAMES["writing"])
+    if include_speaking:
+        parts.append(_SECTION_DISPLAY_NAMES["speaking"])
+    if len(parts) == 0:
+        # Defensive — schema validator already rejects this, but if the
+        # email path is ever reached with no sections, render something.
+        return "no sections selected"
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return f"{parts[0]}, {parts[1]}, and {parts[2]}"
+
+
 def _build_invitation_message(
     *,
     candidate_email: str,
@@ -283,6 +330,9 @@ def _build_invitation_message(
     hr_name: str | None,
     regenerated: bool = False,
     display_timezone: str | None = None,
+    include_reading: bool = True,
+    include_writing: bool = True,
+    include_speaking: bool = True,
 ) -> EmailMessage:
     """
     Build a multipart email with both plain-text and HTML parts. Modern email
@@ -309,6 +359,14 @@ def _build_invitation_message(
     else:
         window_str = ""
 
+    # Pre-render the per-invitation section list and the count, used in the
+    # ASSESSMENT DETAILS block of both bodies. Singular vs plural matters
+    # for "component" / "components".
+    sections_str = _format_included_sections(
+        include_reading, include_writing, include_speaking
+    )
+    sections_count = sum([include_reading, include_writing, include_speaking])
+
     msg = EmailMessage()
     msg["Subject"] = subject
     # formataddr renders as: "English Proficiency Test <Sinchana.R@stixis.com>"
@@ -326,6 +384,9 @@ def _build_invitation_message(
             window_str=window_str,
             hr_name=hr_name,
             regenerated=regenerated,
+            sections_str=sections_str,
+            sections_count=sections_count,
+            include_speaking=include_speaking,
         )
     )
     msg.add_alternative(
@@ -336,6 +397,9 @@ def _build_invitation_message(
             window_str=window_str,
             hr_name=hr_name,
             regenerated=regenerated,
+            sections_str=sections_str,
+            sections_count=sections_count,
+            include_speaking=include_speaking,
         ),
         subtype="html",
     )
@@ -350,6 +414,9 @@ def _plain_text_body(
     window_str: str,
     hr_name: str | None,
     regenerated: bool,
+    sections_str: str,
+    sections_count: int,
+    include_speaking: bool,
 ) -> str:
     """Plain-text fallback. Kept short and scannable on any email client."""
     if regenerated:
@@ -397,11 +464,14 @@ def _plain_text_body(
         f"ASSESSMENT DETAILS\n"
         f"--------------------------------------------\n"
         f"\n"
-        f"  - Duration: approximately 30-40 minutes\n"
-        f"  - The assessment is structured across three components:\n"
-        f"    Reading Comprehension, Written Expression, and Communication\n"
-        f"  - A quiet environment with a working microphone is required\n"
-        f"  - A laptop or desktop computer is required (mobile is not supported)\n"
+        f"  - The assessment is structured across "
+        f"{'one component' if sections_count == 1 else f'{sections_count} components'}:\n"
+        f"    {sections_str}\n"
+        + (
+            f"  - A quiet environment with a working microphone is required\n"
+            if include_speaking else ""
+        )
+        + f"  - A laptop or desktop computer is required (mobile is not supported)\n"
         f"  - The assessment cannot be paused once it has commenced\n"
         f"\n"
         f"--------------------------------------------\n"
@@ -431,6 +501,9 @@ def _html_body(
     window_str: str,
     hr_name: str | None,
     regenerated: bool,
+    sections_str: str,
+    sections_count: int,
+    include_speaking: bool,
 ) -> str:
     """
     HTML version — uses inline styles only (most email clients strip <style>
@@ -534,9 +607,8 @@ def _html_body(
         <!-- Assessment details -->
         <h2 style="margin:0 0 12px 0;font-size:14px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:0.5px;">Assessment details</h2>
         <ul style="margin:0 0 28px 20px;padding:0;font-size:14px;color:#374151;list-style:disc;">
-          <li style="margin:0 0 6px 0;"><strong>Duration:</strong> approximately 30-40 minutes</li>
-          <li style="margin:0 0 6px 0;">The assessment is structured across three components: <strong>Reading Comprehension, Written Expression, and Communication</strong></li>
-          <li style="margin:0 0 6px 0;">A quiet environment with a working microphone is required</li>
+          <li style="margin:0 0 6px 0;">The assessment is structured across {'one component' if sections_count == 1 else str(sections_count) + ' components'}: <strong>{sections_str}</strong></li>
+          {'<li style="margin:0 0 6px 0;">A quiet environment with a working microphone is required</li>' if include_speaking else ''}
           <li style="margin:0 0 6px 0;">A laptop or desktop computer is required (mobile is not supported)</li>
           <li style="margin:0;">The assessment cannot be paused once it has commenced</li>
         </ul>
