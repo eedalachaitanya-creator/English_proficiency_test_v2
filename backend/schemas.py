@@ -314,6 +314,14 @@ class ScoreDetail(BaseModel):
     rating: Optional[str]
     ai_feedback: Optional[str]
 
+    # Per-invitation section selection — lets the candidate-detail page
+    # render "Not included in this test" instead of a misleading "Not yet
+    # submitted" or "AI scoring pending" for sections HR opted out of.
+    # Defaults to True for legacy rows (pre-feature, full test).
+    include_reading: bool = True
+    include_writing: bool = True
+    include_speaking: bool = True
+
     # Tab-switching telemetry from the candidate's browser. count is the
     # number of times they switched away (after the 2-second threshold);
     # total_seconds is cumulative time spent away. HR uses these as one
