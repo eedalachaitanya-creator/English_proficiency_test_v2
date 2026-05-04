@@ -5,7 +5,12 @@ Database connection setup.
 - Exposes `engine`, `SessionLocal`, and `Base`.
 - `get_db()` is a FastAPI dependency: each request gets its own DB session
   that auto-closes when the request finishes.
-- `init_db()` creates all tables. Called once at app startup.
+
+Schema management is handled exclusively by Alembic — there is no
+create_all() at startup. Run `alembic upgrade head` after pulling new
+migrations. (Background: create_all silently creates new TABLES from model
+definitions but never adds new COLUMNS to existing tables, which made the
+schema diverge from alembic's view and broke later migrations.)
 """
 import os
 from sqlalchemy import create_engine
@@ -32,21 +37,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
-
-def init_db():
-    """
-    Create all tables registered on Base.metadata. Idempotent.
-
-    NOTE: This is a fresh-DB convenience for local dev. It does NOT alter
-    existing tables, so it can't apply schema changes after the first run.
-    For all schema changes, use Alembic:
-        alembic revision --autogenerate -m "describe change"
-        alembic upgrade head
-    The app calls this on startup so a brand-new SQLite/Postgres DB still
-    boots without manually running Alembic, but Alembic is the source of
-    truth for any schema change after the initial creation.
-    """
-    # Import models so SQLAlchemy registers them on Base before create_all.
-    import models  # noqa: F401
-    Base.metadata.create_all(bind=engine)

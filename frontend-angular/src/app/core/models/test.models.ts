@@ -48,7 +48,6 @@ export interface WritingTopicPublic {
 /** Full payload returned by GET /api/test-content. */
 export interface TestContent {
   candidate_name: string;
-  candidate_email: string;
   difficulty: 'intermediate' | 'expert';
 
   // Section 1 — Reading
@@ -65,13 +64,16 @@ export interface TestContent {
 
   // Timing
   duration_written_seconds: number;
-  expires_at: string; // ISO 8601 timestamp
+  // Window-end as ISO-8601 UTC string (suffix "Z"). Each test page schedules
+  // a setTimeout against this so the test auto-submits at the window end
+  // even mid-section. Distinct from per-section timers (duration_*_seconds).
+  valid_until_iso: string;
 }
 
 /** Server response from POST /api/submit. */
 export interface SubmitResponse {
   ref_id: string; // e.g. "EPT-00001-5YICMW"
-  message: string;
+  status: string; // "submitted"
 }
 
 /** Map of question_id → selected option index (0-3). */

@@ -33,6 +33,10 @@ export interface InviteCreateRequest {
   candidate_name: string;
   candidate_email: string;
   difficulty: 'intermediate' | 'expert';
+  // ISO-8601 UTC strings — see hr-dashboard.ts submitInvite() for the
+  // browser-local-to-UTC conversion. Both required.
+  valid_from: string;
+  valid_until: string;
 }
 
 export interface InviteCreateResponse {
@@ -65,7 +69,8 @@ export interface InvitationDetails {
   difficulty: string;
 
   created_at: string;
-  expires_at: string;
+  valid_from: string;          // window start (ISO UTC) — when URL becomes active
+  expires_at: string;          // window end (ISO UTC) — when URL stops working
   started_at: string | null;
   submitted_at: string | null;
 
@@ -148,9 +153,15 @@ export interface ResultDetail {
   rating: string | null;
   ai_feedback: string | null;
 
+  // Tab-switching telemetry. count = number of times the candidate switched
+  // away (after the 2-second threshold); total_seconds = cumulative time away.
+  // Old rows submitted before the columns existed default to 0 server-side.
+  tab_switches_count: number | null;
+  tab_switches_total_seconds: number | null;
+
   // Why the test ended. Null for old rows submitted before this column existed.
   // One of: candidate_finished | reading_timer_expired | writing_timer_expired
-  // | speaking_timer_expired | tab_switch_termination.
+  // | speaking_timer_expired | tab_switch_termination | window_expired.
   submission_reason: string | null;
 
   audio_recordings: AudioRecordingPublic[];

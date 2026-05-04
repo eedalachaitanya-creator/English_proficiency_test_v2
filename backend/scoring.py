@@ -139,11 +139,10 @@ def derive_rating(total_score: int) -> str:
 
 
 
-# Section weights (must sum to 1.0). Equal weighting across all three sections.
-# Use 1/3 (not 0.3333) so floating-point round-off does not push the sum off 1.0.
-W_READING = 1 / 3
-W_WRITING = 1 / 3
-W_SPEAKING = 1 / 3
+# Section weights — must sum to 1.0. Sourced from config.py so the client
+# can tune the relative importance of reading / writing / speaking without
+# editing scoring code.
+from config import W_READING, W_WRITING, W_SPEAKING
 
 
 def compute_total(

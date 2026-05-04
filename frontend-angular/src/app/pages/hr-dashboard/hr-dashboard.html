@@ -204,7 +204,7 @@
   <div class="modal-backdrop show" (click)="closeInvite()">
     <div class="modal" (click)="$event.stopPropagation()">
       <h2>Invite a Candidate</h2>
-      <p class="subtitle">Generates a one-time URL valid for 24 hours.</p>
+      <p class="subtitle">Generates a one-time URL active during your scheduled window.</p>
 
       @if (!inviteResult()) {
         <div class="field">
@@ -248,6 +248,40 @@
             </label>
           </div>
         </div>
+
+        <div class="field">
+          <label for="invDate">Test Date *</label>
+          <input
+            type="date"
+            id="invDate"
+            required
+            [(ngModel)]="invDate"
+            [disabled]="inviteSubmitting()">
+        </div>
+
+        <div class="field" style="display:flex; gap:12px;">
+          <div style="flex:1;">
+            <label for="invStartTime">Start Time *</label>
+            <input
+              type="time"
+              id="invStartTime"
+              required
+              [(ngModel)]="invStartTime"
+              [disabled]="inviteSubmitting()">
+          </div>
+          <div style="flex:1;">
+            <label for="invEndTime">End Time *</label>
+            <input
+              type="time"
+              id="invEndTime"
+              required
+              [(ngModel)]="invEndTime"
+              [disabled]="inviteSubmitting()">
+          </div>
+        </div>
+        <small class="text-muted" style="display:block; margin-top:4px; font-size:12px;">
+          Window must be at least 60 minutes (the test takes ~60 min).
+        </small>
 
         @if (inviteError()) {
           <div class="field-error">{{ inviteError() }}</div>

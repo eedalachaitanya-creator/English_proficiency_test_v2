@@ -122,7 +122,9 @@
         <!-- Lifecycle timestamps + actions -->
         <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
           <div class="text-muted" style="font-size: 13px; margin-bottom: 4px;">
-            Expires: {{ formatSubmittedDateTime(invitation()!.expires_at) }}
+            Window: {{ formatSubmittedDateTime(invitation()!.valid_from) }}
+            &nbsp;→&nbsp;
+            {{ formatSubmittedDateTime(invitation()!.expires_at) }}
           </div>
           <div class="text-muted" style="font-size: 13px; margin-bottom: 4px;">
             @if (invitation()!.started_at) {
@@ -180,6 +182,10 @@
             <div style="margin-top: 12px;">
               <strong>Score: {{ detail()!.speaking_score }} / 100</strong>
             </div>
+            <app-radar-breakdown
+              [breakdown]="detail()!.speaking_breakdown"
+              [maxValue]="100">
+            </app-radar-breakdown>
           } @else if (detail()!.submitted_at) {
             <em>AI scoring pending.</em>
           } @else {
@@ -226,6 +232,10 @@
               <div style="margin-top: 12px;">
                 <strong>Score: {{ detail()!.writing_score }} / 100</strong>
               </div>
+              <app-radar-breakdown
+                [breakdown]="detail()!.writing_breakdown"
+                [maxValue]="20">
+              </app-radar-breakdown>
             </div>
           } @else {
             <div style="margin-bottom: 12px;">

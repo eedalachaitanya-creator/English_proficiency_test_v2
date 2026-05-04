@@ -76,6 +76,8 @@ export class Reading implements OnInit, OnDestroy {
   });
 
   private countdown: TimerHandle | null = null;
+  /** Window-end auto-submit timer — fires when HR's scheduled window closes. */
+  private windowTimerId: ReturnType<typeof setTimeout> | null = null;
   private subs = new Subscription();
 
   private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
@@ -89,6 +91,7 @@ export class Reading implements OnInit, OnDestroy {
         this.content.set(c);
         this.answers.set(this.store.getReadingAnswers());
         this.startTimer(c);
+        this.scheduleWindowEnd(c.valid_until_iso);
       },
       error: (err: ApiError) => {
         if (err.status === 401) {
@@ -145,8 +148,52 @@ export class Reading implements OnInit, OnDestroy {
       this.countdown.stop();
       this.countdown = null;
     }
+    if (this.windowTimerId !== null) {
+      clearTimeout(this.windowTimerId);
+      this.windowTimerId = null;
+    }
     this.subs.unsubscribe();
     window.removeEventListener('beforeunload', this.beforeUnloadHandler);
+  }
+
+  // setTimeout silently clamps delays > INT32_MAX (~24.8 days) to 1ms,
+  // firing the callback immediately. For windows scheduled further out we
+  // chunk the wait — see armWindowTimer below.
+  private static readonly MAX_TIMEOUT_MS = 2_147_483_000;
+
+  /**
+   * Schedule a setTimeout that auto-submits the test when HR's scheduled
+   * window closes. Independent from the per-section reading timer — either
+   * deadline triggers a submit, whichever fires first. setTimeout is
+   * wall-clock-correct (unlike setInterval which gets throttled in hidden
+   * tabs), so the window deadline is honored even if the candidate has
+   * been backgrounded.
+   */
+  private scheduleWindowEnd(validUntilIso: string): void {
+    this.armWindowTimer(new Date(validUntilIso).getTime());
+  }
+
+  private armWindowTimer(deadline: number): void {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      // Already past the window when the page loaded — auto-submit now.
+      this.forceSubmit.terminateAndSubmit('window_expired');
+      return;
+    }
+    const delay = Math.min(remaining, Reading.MAX_TIMEOUT_MS);
+    this.windowTimerId = setTimeout(() => {
+      this.windowTimerId = null;
+      if (Date.now() < deadline) {
+        // Hit the chunk cap, not the real deadline — re-arm.
+        this.armWindowTimer(deadline);
+        return;
+      }
+      if (this.countdown) {
+        this.countdown.stop();
+        this.countdown = null;
+      }
+      this.forceSubmit.terminateAndSubmit('window_expired');
+    }, delay);
   }
 
   /**

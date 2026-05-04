@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingResponse, WritingTopic
+from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingResponse, WritingTopic, SystemSettings
 from schemas import (
     HRLoginRequest,
     HRLoginResponse,
@@ -35,13 +35,99 @@ from email_service import send_invitation_email, send_regenerated_code_email
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
 
-INVITATION_TTL_HOURS = int(os.getenv("INVITATION_TTL_HOURS", "24"))
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 
 def _utcnow_naive() -> datetime:
     """Match models.py's _utcnow — naive UTC for cross-DB consistency."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+# ------------------------------------------------------------------
+# Scheduled URL validity window — HR picks a [valid_from, valid_until]
+# range when creating an invitation. The candidate's URL is active only
+# during that window. PAST_GRACE_SECONDS and MIN_WINDOW_SECONDS live in
+# config.py so the client can tune them without code changes here.
+# ------------------------------------------------------------------
+from config import PAST_GRACE_SECONDS, MIN_WINDOW_SECONDS
+
+
+# ------------------------------------------------------------------
+# System settings snapshot — operational config that HR can change in
+# the DB without redeploying. Each invitation snapshots these values at
+# creation; changes here do NOT affect existing or in-flight invitations.
+# ------------------------------------------------------------------
+# Defensive fallback used only when the system_settings row is missing
+# (fresh DB never migrated, or row deleted). Migration seeds the row, so
+# this branch is rare. Values are sourced from config.py so the fallback
+# can never silently drift away from the migration's seed defaults.
+from config import (
+    FALLBACK_MAX_STARTS,
+    FALLBACK_READING_SECONDS,
+    FALLBACK_WRITING_SECONDS,
+    FALLBACK_SPEAKING_SECONDS,
+)
+_FALLBACK_SETTINGS = {
+    "max_starts": FALLBACK_MAX_STARTS,
+    "reading_seconds": FALLBACK_READING_SECONDS,
+    "writing_seconds": FALLBACK_WRITING_SECONDS,
+    "speaking_seconds": FALLBACK_SPEAKING_SECONDS,
+}
+
+
+def _settings_to_dict(row) -> dict:
+    """
+    Convert a SystemSettings ORM row (or None) to a settings dict for
+    snapshotting onto a new Invitation. Pure function — no I/O.
+
+    Why a dict not a transient SystemSettings instance: SQLAlchemy column
+    defaults only run at INSERT time. An unpersisted SystemSettings()
+    would have None for every field, not the column defaults.
+    """
+    if row is None:
+        return dict(_FALLBACK_SETTINGS)
+    return {
+        "max_starts": row.max_starts,
+        "reading_seconds": row.reading_seconds,
+        "writing_seconds": row.writing_seconds,
+        "speaking_seconds": row.speaking_seconds,
+    }
+
+
+def _to_naive_utc(dt: datetime) -> datetime:
+    """
+    Normalize a datetime to naive UTC. The frontend sends ISO strings with
+    'Z' suffix → Pydantic parses them as timezone-aware. The rest of the
+    codebase uses naive UTC. Convert at the boundary.
+    """
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _validate_window(valid_from: datetime, valid_until: datetime) -> None:
+    """
+    Raise 400 HTTPException if the [valid_from, valid_until] window is
+    invalid. Pure function so it's easy to unit-test.
+    """
+    valid_from = _to_naive_utc(valid_from)
+    valid_until = _to_naive_utc(valid_until)
+    now = _utcnow_naive()
+    if valid_from < now - timedelta(seconds=PAST_GRACE_SECONDS):
+        raise HTTPException(
+            status_code=400,
+            detail="Start time cannot be in the past.",
+        )
+    if valid_until <= valid_from:
+        raise HTTPException(
+            status_code=400,
+            detail="End time must be after start time.",
+        )
+    if (valid_until - valid_from).total_seconds() < MIN_WINDOW_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail="Window must be at least 60 minutes — the test takes about an hour.",
+        )
 
 
 # ------------------------------------------------------------------
@@ -124,8 +210,20 @@ def create_invite(
     if not candidate_name:
         raise HTTPException(status_code=422, detail="candidate_name cannot be blank.")
 
-    expires_at = _utcnow_naive() + timedelta(hours=INVITATION_TTL_HOURS)
+    # Validate HR-chosen scheduling window. _validate_window raises 400 with
+    # a friendly message if the window is in the past, end <= start, or shorter
+    # than 60 min (the test budget). Frontend pre-flights the same checks but
+    # we re-validate here as the source of truth.
+    _validate_window(payload.valid_from, payload.valid_until)
+    # Persist as naive UTC to match the column type and rest of the codebase.
+    valid_from = _to_naive_utc(payload.valid_from)
+    expires_at = _to_naive_utc(payload.valid_until)
     access_code = generate_access_code()
+
+    # Snapshot the operational settings onto this invitation. Future setting
+    # changes won't affect this row — see spec for the rationale.
+    settings_row = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+    settings = _settings_to_dict(settings_row)
 
     inv = Invitation(
         token=token,
@@ -133,8 +231,13 @@ def create_invite(
         candidate_name=candidate_name,
         difficulty=payload.difficulty,
         hr_admin_id=hr.id,
+        valid_from=valid_from,
         expires_at=expires_at,
         access_code=access_code,
+        max_starts=settings["max_starts"],
+        reading_seconds=settings["reading_seconds"],
+        writing_seconds=settings["writing_seconds"],
+        speaking_seconds=settings["speaking_seconds"],
     )
     db.add(inv)
     db.commit()
@@ -150,6 +253,8 @@ def create_invite(
         candidate_name=inv.candidate_name,
         exam_url=exam_url,
         access_code=access_code,
+        valid_from=inv.valid_from,
+        valid_until=inv.expires_at,
         hr_name=hr.name,
     )
 
@@ -228,6 +333,8 @@ def regenerate_code(
         candidate_name=inv.candidate_name,
         exam_url=exam_url,
         access_code=inv.access_code,
+        valid_from=inv.valid_from,
+        valid_until=inv.expires_at,
         hr_name=hr.name,
     )
 
@@ -293,6 +400,7 @@ def invitation_details(
         candidate_email=inv.candidate_email,
         difficulty=inv.difficulty,
         created_at=inv.created_at,
+        valid_from=inv.valid_from,
         expires_at=inv.expires_at,
         started_at=inv.started_at,
         submitted_at=inv.submitted_at,
@@ -343,6 +451,8 @@ def resend_invitation_email(
         candidate_name=inv.candidate_name,
         exam_url=exam_url,
         access_code=inv.access_code,
+        valid_from=inv.valid_from,
+        valid_until=inv.expires_at,
         hr_name=hr.name,
     )
 

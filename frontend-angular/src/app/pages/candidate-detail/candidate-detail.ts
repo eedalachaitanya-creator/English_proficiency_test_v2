@@ -14,6 +14,7 @@ import {
 } from '../../core/models/hr.models';
 import { Topnav } from '../../shared/components/topnav/topnav';
 import { Footer } from '../../shared/components/footer/footer';
+import { RadarBreakdown } from '../../shared/components/radar-breakdown/radar-breakdown';
 
 /**
  * Candidate detail page — shows full breakdown for one candidate.
@@ -36,7 +37,7 @@ import { Footer } from '../../shared/components/footer/footer';
 @Component({
   selector: 'app-candidate-detail',
   standalone: true,
-  imports: [CommonModule, RouterLink, Topnav, Footer],
+  imports: [CommonModule, RouterLink, Topnav, Footer, RadarBreakdown],
   templateUrl: './candidate-detail.html',
   styleUrl: './candidate-detail.css',
 })
@@ -361,6 +362,8 @@ export class CandidateDetail implements OnInit {
         return { color: 'var(--text-muted)', icon: '⏱', label: 'Auto-submitted (speaking timer)' };
       case 'tab_switch_termination':
         return { color: 'var(--red)', icon: '🚫', label: 'Terminated (tab switching)' };
+      case 'window_expired':
+        return { color: 'var(--text-muted)', icon: '⏱', label: 'Auto-submitted (scheduled window ended)' };
       default:
         return null;
     }

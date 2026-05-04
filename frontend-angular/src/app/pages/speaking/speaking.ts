@@ -28,7 +28,10 @@ type Phase = 'idle' | 'prep' | 'recording';
 // and writing reasons are produced by their own pages.
 type SpeakingSubmitReason = Extract<
   SubmissionReason,
-  'candidate_finished' | 'tab_switch_termination' | 'speaking_timer_expired'
+  'candidate_finished'
+  | 'tab_switch_termination'
+  | 'speaking_timer_expired'
+  | 'window_expired'
 >;
 
 interface RecordingEntry {
@@ -142,6 +145,8 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
   private prepTimer: TimerHandle | null = null;
   /** Hidden 10-min section-level safety net. setTimeout id for cancellation. */
   private sectionTimerId: ReturnType<typeof setTimeout> | null = null;
+  /** HR's scheduled-window auto-submit timer. Distinct from the section net. */
+  private windowTimerId: ReturnType<typeof setTimeout> | null = null;
   /** Race guard: only one submit (manual finish, tab-term, section-timer) wins. */
   private isAutoSubmitting = false;
   private subs = new Subscription();
@@ -194,6 +199,10 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
         // candidate (per-question timer is the primary UI). Auto-submits
         // if the candidate idles past the budget.
         this.startSectionSafetyNet(c.duration_speaking_seconds);
+
+        // HR's scheduled window also forces a submit at its end-time —
+        // independent from the section safety net. Whichever fires first wins.
+        this.scheduleWindowEnd(c.valid_until_iso);
 
         // Block the browser back button only AFTER content loads cleanly.
         // If load fails, the candidate sees an error screen and needs the
@@ -255,12 +264,46 @@ export class Speaking implements OnInit, OnDestroy, AfterViewInit {
       clearTimeout(this.sectionTimerId);
       this.sectionTimerId = null;
     }
+    if (this.windowTimerId !== null) {
+      clearTimeout(this.windowTimerId);
+      this.windowTimerId = null;
+    }
     this.subs.unsubscribe();
     window.removeEventListener('beforeunload', this.beforeUnloadHandler);
     window.removeEventListener('popstate', this.popstateHandler);
     if (this.playbackUrl()) {
       URL.revokeObjectURL(this.playbackUrl());
     }
+  }
+
+  // See reading.ts MAX_TIMEOUT_MS — setTimeout overflows past ~24.8 days.
+  private static readonly MAX_TIMEOUT_MS = 2_147_483_000;
+
+  /**
+   * Schedule a setTimeout that auto-submits the test when HR's scheduled
+   * window closes. Reuses autoSubmitWithRecordings so any in-progress audio
+   * gets captured (mid-recording cutoff). The race guard inside that method
+   * means the section safety net or tab-switch handler won't double-fire.
+   */
+  private scheduleWindowEnd(validUntilIso: string): void {
+    this.armWindowTimer(new Date(validUntilIso).getTime());
+  }
+
+  private armWindowTimer(deadline: number): void {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      this.autoSubmitWithRecordings('window_expired');
+      return;
+    }
+    const delay = Math.min(remaining, Speaking.MAX_TIMEOUT_MS);
+    this.windowTimerId = setTimeout(() => {
+      this.windowTimerId = null;
+      if (Date.now() < deadline) {
+        this.armWindowTimer(deadline);
+        return;
+      }
+      this.autoSubmitWithRecordings('window_expired');
+    }, delay);
   }
 
   // ---- Mic permission, requested once at page load ----

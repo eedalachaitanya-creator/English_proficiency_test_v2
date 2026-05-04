@@ -94,6 +94,12 @@ export class HrDashboard implements OnInit {
   invName = '';
   invEmail = '';
   invDifficulty: 'intermediate' | 'expert' = 'intermediate';
+  // Scheduled URL window — split into one date + two times (start/end on the
+  // same day). Bound to native <input type="date"> ("YYYY-MM-DD") and
+  // <input type="time"> ("HH:MM"). Combined into ISO UTC before POST.
+  invDate = '';
+  invStartTime = '';
+  invEndTime = '';
   inviteSubmitting = signal(false);
   inviteError = signal('');
   inviteResult = signal<InviteCreateResponse | null>(null);
@@ -225,6 +231,10 @@ export class HrDashboard implements OnInit {
     this.invName = '';
     this.invEmail = '';
     this.invDifficulty = 'intermediate';
+    // Empty by default — HR must explicitly pick the date and times.
+    this.invDate = '';
+    this.invStartTime = '';
+    this.invEndTime = '';
     this.inviteError.set('');
     this.inviteResult.set(null);
     this.inviteCopied.set(false);
@@ -242,11 +252,39 @@ export class HrDashboard implements OnInit {
     const email = this.invEmail.trim();
 
     if (!name || !email) {
-      this.inviteError.set('Both fields are required.');
+      this.inviteError.set('Both name and email are required.');
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       this.inviteError.set('Enter a valid email address.');
+      return;
+    }
+    if (!this.invDate || !this.invStartTime || !this.invEndTime) {
+      this.inviteError.set('Pick the test date, start time, and end time.');
+      return;
+    }
+
+    // Combine date + time strings into a Date in browser-local time. Format:
+    //   invDate     = "YYYY-MM-DD"
+    //   invStartTime = "HH:MM"
+    // → "YYYY-MM-DDTHH:MM" → new Date() parses as browser local → toISOString()
+    // converts to UTC for the backend. Both start and end share the same date.
+    const fromMs = new Date(`${this.invDate}T${this.invStartTime}`).getTime();
+    const untilMs = new Date(`${this.invDate}T${this.invEndTime}`).getTime();
+    if (isNaN(fromMs) || isNaN(untilMs)) {
+      this.inviteError.set('Invalid date/time. Please re-enter.');
+      return;
+    }
+    if (fromMs < Date.now() - 60_000) {
+      this.inviteError.set('Start time cannot be in the past.');
+      return;
+    }
+    if (untilMs <= fromMs) {
+      this.inviteError.set('End time must be after start time.');
+      return;
+    }
+    if (untilMs - fromMs < 60 * 60 * 1000) {
+      this.inviteError.set('Window must be at least 60 minutes (the test takes ~60 min).');
       return;
     }
 
@@ -254,6 +292,8 @@ export class HrDashboard implements OnInit {
       candidate_name: name,
       candidate_email: email,
       difficulty: this.invDifficulty,
+      valid_from: new Date(fromMs).toISOString(),
+      valid_until: new Date(untilMs).toISOString(),
     };
 
     this.inviteSubmitting.set(true);

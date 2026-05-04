@@ -34,14 +34,29 @@ from schemas import (
 router = APIRouter(tags=["candidate"])
 
 # Code-entry security
-MAX_CODE_ATTEMPTS = 3  # after this many wrong codes, invitation is locked
+from config import (
+    MAX_CODE_ATTEMPTS,
+    WRITTEN_QUESTIONS_PER_TEST,
+    SPEAKING_QUESTIONS_PER_TEST,
+)
+# Section duration constants are no longer module-level — each Invitation
+# now carries its own snapshotted reading_seconds / writing_seconds /
+# speaking_seconds, sourced from system_settings at creation time. Edit
+# system_settings (or the migration's seed values) to change defaults.
 
-# v1 constants — match the locked scope.
-WRITTEN_QUESTIONS_PER_TEST = 15
-SPEAKING_QUESTIONS_PER_TEST = 3
-WRITTEN_DURATION_SECONDS = 30 * 60    # 30 minutes for the reading MCQs
-WRITING_DURATION_SECONDS = 20 * 60    # 20 minutes for the essay
-SPEAKING_DURATION_SECONDS = 10 * 60   # 10 minutes for 3 speaking prompts
+
+def _can_start(start_count: int, max_starts: int) -> bool:
+    """
+    Counter-based replacement for the old single-use rule. Returns True if
+    the candidate is allowed to verify the access code one more time.
+    Pure function — easy to unit-test.
+
+    The candidate's start_count starts at 0 and is incremented on each
+    successful verification. The URL is locked when start_count reaches
+    max_starts. max_starts of 1 reproduces the old behavior; 0 locks the
+    URL from creation (HR misconfiguration — accepted, see spec).
+    """
+    return start_count < max_starts
 
 
 def _utcnow_naive() -> datetime:
@@ -57,7 +72,10 @@ def _check_invitation_active(inv: Invitation):
     if inv.submitted_at is not None:
         raise HTTPException(status_code=410, detail="This test has already been submitted.")
     if inv.expires_at < now:
-        raise HTTPException(status_code=410, detail="This test link has expired (24-hour limit).")
+        raise HTTPException(
+            status_code=410,
+            detail="This test link's scheduled window has ended.",
+        )
 
 
 def _assign_content(inv: Invitation, db: Session):
@@ -197,19 +215,37 @@ def verify_code(
     # Active checks (expired, already submitted)
     _check_invitation_active(inv)
 
-    # Once the test has been started, the URL is "consumed" — the candidate
-    # cannot reopen the link to start over (or even resume from a fresh
-    # browser). In-session continuation is unaffected because that path
-    # uses the session cookie set on first entry, not this endpoint. A
-    # candidate who experienced a real technical failure must contact HR
-    # to request a fresh invitation.
-    if inv.started_at is not None:
+    # Scheduled-window check — HR may have set a future start time. 425 (Too
+    # Early) is the standard HTTP code for "the request is correct but the
+    # server isn't ready to accept it yet" — distinct from 410 (gone forever).
+    if inv.valid_from > _utcnow_naive():
+        # Format as a human-readable string so the candidate sees something
+        # like "May 5, 2026 at 2:00 PM (UTC)" instead of an ISO timestamp.
+        # The .replace(' 0', ' ') drops any leading zero that follows a
+        # space (e.g. "May 05" → "May 5", " 09:00 AM" → " 9:00 AM") since
+        # strftime has no portable cross-platform flag for this.
+        opens_at = (
+            f"{inv.valid_from.strftime('%B %d, %Y at %I:%M %p').replace(' 0', ' ')} (UTC)"
+        )
+        raise HTTPException(
+            status_code=425,
+            detail=(
+                f"This test isn't open yet. It opens on {opens_at}. "
+                f"Please come back at the scheduled time."
+            ),
+        )
+
+    # Counter-based start gate. Replaces the old binary "started_at != None"
+    # rule with a configurable max-starts limit (snapshotted onto the
+    # invitation from system_settings at creation time). Default is 1, which
+    # exactly reproduces the previous single-use behavior.
+    if not _can_start(inv.start_count, inv.max_starts):
         raise HTTPException(
             status_code=410,
             detail=(
-                "This test has already been started and cannot be reopened. "
-                "If you experienced a technical issue, please contact your "
-                "HR manager to request a new invitation."
+                "This test has reached its allowed number of opens and "
+                "cannot be reopened. If you experienced a technical issue, "
+                "please contact your HR manager to request a fresh invitation."
             ),
         )
 
@@ -253,6 +289,23 @@ def verify_code(
 
     if inv.assigned_question_ids is None:
         _assign_content(inv, db)
+
+    # Counter increment + first-start timestamp. start_count tracks every
+    # successful verification so the next attempt can be compared against
+    # max_starts. started_at records ONLY the first start (preserved for HR
+    # display).
+    #
+    # TODO: this read-modify-write of start_count is not race-safe. Two
+    # browser tabs racing the access-code POST can both pass _can_start()
+    # and both increment, consuming up to 2× the budget on the same click.
+    # Acceptable for the current trusted-HR / max_starts=1-by-default
+    # environment per the spec
+    # (docs/superpowers/specs/2026-05-04-system-settings-runtime-config-design.md).
+    # If max_starts > 1 ever becomes the norm, switch to a SELECT ... FOR
+    # UPDATE on the invitation row above, or move the counter into a
+    # database-level UPDATE ... RETURNING that's atomic.
+    inv.start_count = (inv.start_count or 0) + 1
+    if inv.started_at is None:
         inv.started_at = _utcnow_naive()
 
     db.commit()
@@ -324,9 +377,15 @@ def get_test_content(request: Request, db: Session = Depends(get_db)):
     return TestContent(
         candidate_name=inv.candidate_name,
         difficulty=inv.difficulty,
-        duration_written_seconds=WRITTEN_DURATION_SECONDS,
-        duration_writing_seconds=WRITING_DURATION_SECONDS,
-        duration_speaking_seconds=SPEAKING_DURATION_SECONDS,
+        # Per-invitation durations — snapshotted from system_settings at
+        # invitation creation. Setting changes do not affect existing
+        # invitations; each one carries the values it was created with.
+        duration_written_seconds=inv.reading_seconds,
+        duration_writing_seconds=inv.writing_seconds,
+        duration_speaking_seconds=inv.speaking_seconds,
+        # ISO-8601 UTC with 'Z' suffix so the Angular frontend can `new Date(iso)`
+        # and schedule the window-end setTimeout against the wall clock.
+        valid_until_iso=inv.expires_at.isoformat() + "Z",
         passage=PassagePublic(id=passage.id, title=passage.title, body=passage.body),
         questions=[
             QuestionPublic(

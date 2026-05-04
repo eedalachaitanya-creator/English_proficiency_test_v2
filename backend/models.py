@@ -127,13 +127,30 @@ class Invitation(Base):
 
     # Lifecycle
     created_at = Column(DateTime, default=_utcnow, nullable=False)
-    expires_at = Column(DateTime, nullable=False)         # created_at + 24h
+    # Scheduled URL validity window. The candidate's exam URL is active only
+    # between [valid_from, expires_at]. Both are required and HR-chosen at
+    # invitation creation. expires_at was historically created_at + 24h; now
+    # it is HR's chosen window-end with no fixed relation to created_at.
+    valid_from = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
     started_at = Column(DateTime, nullable=True)          # first time URL opened
     submitted_at = Column(DateTime, nullable=True)        # final submission
     # Why the test was submitted. One of: candidate_finished | reading_timer_expired
     # | writing_timer_expired | speaking_timer_expired | tab_switch_termination.
     # Nullable for old rows submitted before this column existed.
     submission_reason = Column(String(40), nullable=True)
+
+    # Snapshotted from system_settings at invitation creation. Each invitation
+    # carries the operational config it was created with — changing the global
+    # setting later does NOT affect existing invitations. See
+    # docs/superpowers/specs/2026-05-04-system-settings-runtime-config-design.md.
+    # Defaults match the historical hardcoded values so pre-feature rows
+    # backfill correctly.
+    max_starts = Column(Integer, default=1, nullable=False)
+    start_count = Column(Integer, default=0, nullable=False)
+    reading_seconds = Column(Integer, default=30 * 60, nullable=False)
+    writing_seconds = Column(Integer, default=20 * 60, nullable=False)
+    speaking_seconds = Column(Integer, default=10 * 60, nullable=False)
 
     # Access code (6-digit) candidate must enter after clicking URL.
     # Lockout: 5 wrong attempts -> code_locked=True, HR must regenerate.
@@ -261,7 +278,7 @@ class Score(Base):
     speaking_breakdown = Column(JSON)    # {"fluency": 22, "pronunciation": 18, "grammar": 17, "vocabulary": 13, "coherence": 17}
     speaking_score = Column(Integer)     # 0..100, normalized
 
-    # Combined — weighted: 25% reading + 35% writing + 40% speaking
+    # Combined — weighted via config.W_READING/W_WRITING/W_SPEAKING (currently 1/3 each).
     total_score = Column(Integer)        # 0..100
     rating = Column(String(30))          # 'recommended' | 'borderline' | 'not_recommended'
     ai_feedback = Column(Text)           # paragraph from Claude
@@ -269,3 +286,29 @@ class Score(Base):
     scored_at = Column(DateTime, default=_utcnow, nullable=False)
 
     invitation = relationship("Invitation", back_populates="score")
+
+
+class SystemSettings(Base):
+    """
+    Singleton row (id=1) carrying the operational config knobs HR can change
+    without redeploying. CHECK constraint enforces the singleton — only ever
+    one row in this table.
+
+    On each invitation creation, the values here are SNAPSHOTTED onto the
+    new Invitation row. Changing values here does NOT affect existing or
+    in-flight invitations — only ones created afterwards.
+
+    HR (or an engineer with DB access) edits this with plain SQL:
+        UPDATE system_settings SET writing_seconds = 900 WHERE id = 1;
+
+    See docs/superpowers/specs/2026-05-04-system-settings-runtime-config-design.md.
+    """
+    __tablename__ = "system_settings"
+    id = Column(Integer, primary_key=True)
+    max_starts = Column(Integer, default=1, nullable=False)
+    reading_seconds = Column(Integer, default=30 * 60, nullable=False)
+    writing_seconds = Column(Integer, default=20 * 60, nullable=False)
+    speaking_seconds = Column(Integer, default=10 * 60, nullable=False)
+    __table_args__ = (
+        CheckConstraint("id = 1", name="system_settings_singleton"),
+    )

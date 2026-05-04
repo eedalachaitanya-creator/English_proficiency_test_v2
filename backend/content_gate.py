@@ -57,7 +57,7 @@ def _has_profanity(text: str) -> bool:
 # ------------------------------------------------------------------
 # Wrong-script: ≥30% non-Latin letter codepoints → flag.
 # ------------------------------------------------------------------
-_LATIN_RATIO_FLOOR = 0.70  # essays with <70% Latin letters are blocked
+from config import LATIN_RATIO_FLOOR as _LATIN_RATIO_FLOOR  # essays with <70% Latin letters are blocked
 
 
 def _is_wrong_script(text: str) -> bool:
@@ -94,7 +94,7 @@ def _is_wrong_script(text: str) -> bool:
 # ------------------------------------------------------------------
 _VOWELS = frozenset("aeiouy")
 _KEYBOARD_ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
-_MASH_TOKEN_RATIO = 0.30
+from config import MASH_TOKEN_RATIO as _MASH_TOKEN_RATIO
 
 
 def _build_keyboard_windows() -> frozenset[str]:
@@ -134,9 +134,11 @@ def _is_keyboard_mash(text: str) -> bool:
 #   - Same 2-token sequence appearing >5 times in total → flag.
 # Common short function words ("a", "is") are exempt via the len ≥ 3 cutoff.
 # ------------------------------------------------------------------
-_TOKEN_DOMINANCE_RATIO = 0.25
-_DOMINANCE_MIN_TOKEN_LEN = 3
-_BIGRAM_REPEAT_LIMIT = 5
+from config import (
+    TOKEN_DOMINANCE_RATIO as _TOKEN_DOMINANCE_RATIO,
+    DOMINANCE_MIN_TOKEN_LEN as _DOMINANCE_MIN_TOKEN_LEN,
+    BIGRAM_REPEAT_LIMIT as _BIGRAM_REPEAT_LIMIT,
+)
 
 
 def _is_pure_repetition(text: str) -> bool:

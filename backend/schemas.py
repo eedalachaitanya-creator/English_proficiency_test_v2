@@ -31,6 +31,11 @@ class InviteCreateRequest(BaseModel):
     candidate_name: str = Field(min_length=1, max_length=100)
     candidate_email: EmailStr
     difficulty: Literal["intermediate", "expert"]
+    # Scheduled URL validity window. Both required — see
+    # docs/superpowers/specs/2026-05-04-scheduled-url-validity-window-design.md.
+    # Values are sent as ISO-8601 UTC strings from the Angular form.
+    valid_from: datetime
+    valid_until: datetime
 
 
 class InviteCreateResponse(BaseModel):
@@ -81,7 +86,8 @@ class InvitationDetails(BaseModel):
     # Lifecycle timestamps. submitted_at is None for pending candidates;
     # the frontend uses this to decide whether to render this card at all.
     created_at: datetime
-    expires_at: datetime
+    valid_from: datetime         # window start — when the URL becomes active
+    expires_at: datetime         # window end — when the URL stops working
     started_at: Optional[datetime] = None
     submitted_at: Optional[datetime] = None
 
@@ -165,6 +171,10 @@ class TestContent(BaseModel):
     duration_written_seconds: int
     duration_writing_seconds: int               # essay time limit
     duration_speaking_seconds: int
+    # Window end as ISO-8601 UTC string (suffix "Z"). Frontend reads this and
+    # schedules a setTimeout in each test page so the test auto-submits at the
+    # window end even if the candidate is mid-section. See spec.
+    valid_until_iso: str
     passage: PassagePublic                      # the assigned passage
     questions: list[QuestionPublic]             # the 15 questions (RC + grammar + vocab)
     writing_topic: WritingTopicPublic           # the assigned essay prompt

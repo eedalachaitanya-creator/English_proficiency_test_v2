@@ -74,20 +74,12 @@ def dbg_section(title: str) -> None:
 
 
 # ------------------------------------------------------------------
-# Rubric weights — single source of truth.
-# Changing these here automatically changes the final score formula.
+# Rubric weights + minimum audio threshold are sourced from config.py
+# so the client can tune them without editing scoring code.
 # ------------------------------------------------------------------
-RUBRIC_WEIGHTS = {
-    "pronunciation": 0.20,
-    "fluency":       0.25,
-    "grammar":       0.20,
-    "vocabulary":    0.15,
-    "confidence":    0.20,
-}
-assert abs(sum(RUBRIC_WEIGHTS.values()) - 1.0) < 1e-9, "Rubric weights must sum to 1.0"
+from config import SPEAKING_RUBRIC_WEIGHTS as RUBRIC_WEIGHTS, MIN_AUDIO_SECONDS
 
-# Audio shorter than this is treated as "no real attempt" — all dimensions = 0.
-MIN_AUDIO_SECONDS = 5.0
+assert abs(sum(RUBRIC_WEIGHTS.values()) - 1.0) < 1e-9, "Rubric weights must sum to 1.0"
 
 # Known Whisper hallucination strings.
 #

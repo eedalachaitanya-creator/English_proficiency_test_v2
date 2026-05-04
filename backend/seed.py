@@ -16,7 +16,7 @@ change what candidates see.
 import argparse
 import sys
 
-from database import SessionLocal, init_db
+from database import SessionLocal
 from models import Passage, Question, SpeakingTopic, WritingTopic
 
 
@@ -1805,8 +1805,7 @@ def reset_content(db):
 
 
 def seed(db, args):
-    init_db()
-
+    # Schema is managed by alembic — assume `alembic upgrade head` has been run.
     # Pre-flight: refuse if content already exists and --reset not given
     existing = (
         db.query(Passage).count()

@@ -39,7 +39,7 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-HARD_FLOOR_WORDS = 50  # essays shorter than this are rejected as not-meaningful
+from config import HARD_FLOOR_WORDS
 
 
 def _word_count(text: str) -> int:
@@ -56,6 +56,7 @@ _ALLOWED_SUBMISSION_REASONS = {
     "writing_timer_expired",
     "speaking_timer_expired",
     "tab_switch_termination",
+    "window_expired",
 }
 _DEFAULT_SUBMISSION_REASON = "candidate_finished"
 

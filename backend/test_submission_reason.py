@@ -16,6 +16,7 @@ def test_known_value_passes_through_unchanged():
     assert _validate_submission_reason("speaking_timer_expired") == "speaking_timer_expired"
     assert _validate_submission_reason("tab_switch_termination") == "tab_switch_termination"
     assert _validate_submission_reason("candidate_finished") == "candidate_finished"
+    assert _validate_submission_reason("window_expired") == "window_expired"
 
 
 def test_none_defaults_to_candidate_finished():

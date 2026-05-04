@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 # database.py calls load_dotenv() at import time, so env vars are populated by here.
-from database import init_db
+import database  # noqa: F401
 
 # DEV_SESSION_SECRET = "dev-only-secret-change-in-production"
 # SESSION_SECRET = os.getenv("SESSION_SECRET", DEV_SESSION_SECRET)
@@ -74,8 +74,12 @@ if IS_PRODUCTION and not CORS_ALLOWED_ORIGINS:
 # ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run once on startup. Creates DB tables if missing."""
-    init_db()
+    """
+    Schema is managed by Alembic — startup just notes it's up and assumes
+    `alembic upgrade head` has been run. Failing fast at first request if a
+    table is missing is preferable to silently auto-creating a divergent
+    schema (see docstring in database.py for the history).
+    """
     print("[startup] DB ready.")
     yield
     print("[shutdown] goodbye.")

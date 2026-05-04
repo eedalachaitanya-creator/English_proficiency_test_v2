@@ -76,6 +76,8 @@ export class Writing implements OnInit, OnDestroy {
   });
 
   private countdown: TimerHandle | null = null;
+  /** Window-end auto-submit timer — fires when HR's scheduled window closes. */
+  private windowTimerId: ReturnType<typeof setTimeout> | null = null;
   private subs = new Subscription();
   private pasteWarningTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -97,6 +99,7 @@ export class Writing implements OnInit, OnDestroy {
         this.content.set(c);
         this.essay.set(this.store.getWritingEssay());
         this.startTimer(c);
+        this.scheduleWindowEnd(c.valid_until_iso);
         // Block the browser back button only AFTER content loads cleanly.
         // If load fails, the candidate sees an error screen and needs the
         // back button to escape — so we don't trap them.
@@ -158,6 +161,10 @@ export class Writing implements OnInit, OnDestroy {
       this.countdown.stop();
       this.countdown = null;
     }
+    if (this.windowTimerId !== null) {
+      clearTimeout(this.windowTimerId);
+      this.windowTimerId = null;
+    }
     if (this.pasteWarningTimer) {
       clearTimeout(this.pasteWarningTimer);
       this.pasteWarningTimer = null;
@@ -165,6 +172,38 @@ export class Writing implements OnInit, OnDestroy {
     this.subs.unsubscribe();
     window.removeEventListener('beforeunload', this.beforeUnloadHandler);
     window.removeEventListener('popstate', this.popstateHandler);
+  }
+
+  // See reading.ts MAX_TIMEOUT_MS — setTimeout overflows past ~24.8 days.
+  private static readonly MAX_TIMEOUT_MS = 2_147_483_000;
+
+  /**
+   * Schedule a setTimeout that auto-submits the test when HR's scheduled
+   * window closes. See reading.ts:scheduleWindowEnd for the full rationale.
+   */
+  private scheduleWindowEnd(validUntilIso: string): void {
+    this.armWindowTimer(new Date(validUntilIso).getTime());
+  }
+
+  private armWindowTimer(deadline: number): void {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      this.forceSubmit.terminateAndSubmit('window_expired');
+      return;
+    }
+    const delay = Math.min(remaining, Writing.MAX_TIMEOUT_MS);
+    this.windowTimerId = setTimeout(() => {
+      this.windowTimerId = null;
+      if (Date.now() < deadline) {
+        this.armWindowTimer(deadline);
+        return;
+      }
+      if (this.countdown) {
+        this.countdown.stop();
+        this.countdown = null;
+      }
+      this.forceSubmit.terminateAndSubmit('window_expired');
+    }, delay);
   }
 
   // ---- Paste/drop block on the essay textarea ----

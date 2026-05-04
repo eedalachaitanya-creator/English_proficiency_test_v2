@@ -21,7 +21,8 @@ export type SubmissionReason =
   | 'reading_timer_expired'
   | 'writing_timer_expired'
   | 'speaking_timer_expired'
-  | 'tab_switch_termination';
+  | 'tab_switch_termination'
+  | 'window_expired';
 
 /**
  * The "force-submit" logic is needed by the reading, writing, and speaking
@@ -95,7 +96,9 @@ export class ForceSubmitService {
     if (document.getElementById('terminationOverlay')) return;
     const reasonText = submissionReason === 'tab_switch_termination'
       ? 'Your test has been terminated due to repeated tab switches.'
-      : 'Your test has ended because the time limit was reached.';
+      : submissionReason === 'window_expired'
+        ? 'Your test has ended because the scheduled time window has closed.'
+        : 'Your test has ended because the time limit was reached.';
     const overlay = document.createElement('div');
     overlay.id = 'terminationOverlay';
     overlay.style.cssText = `

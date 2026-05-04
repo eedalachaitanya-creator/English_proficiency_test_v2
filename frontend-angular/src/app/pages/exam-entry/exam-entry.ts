@@ -87,7 +87,9 @@ export class ExamEntry implements OnInit {
         this.hasError.set(true);
         this.errorMsg.set(err.message || 'Could not verify code.');
 
-        if (err.status === 423 || err.status === 410 || err.status === 404) {
+        // 425 = test scheduled for the future. Not "locked" — they should
+        // come back at the scheduled time. Treat as a soft block.
+        if (err.status === 423 || err.status === 410 || err.status === 404 || err.status === 425) {
           this.isLocked.set(true);
         }
       },

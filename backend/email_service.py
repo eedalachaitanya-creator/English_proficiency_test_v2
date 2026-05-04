@@ -82,6 +82,8 @@ def send_invitation_email(
     candidate_name: str,
     exam_url: str,
     access_code: str,
+    valid_from,
+    valid_until,
     hr_name: str | None = None,
 ) -> tuple[bool, str | None]:
     """
@@ -109,6 +111,8 @@ def send_invitation_email(
         candidate_name=candidate_name,
         exam_url=exam_url,
         access_code=access_code,
+        valid_from=valid_from,
+        valid_until=valid_until,
         hr_name=hr_name,
     )
 
@@ -146,12 +150,18 @@ def send_regenerated_code_email(
     candidate_name: str,
     exam_url: str,
     access_code: str,
+    valid_from=None,
+    valid_until=None,
     hr_name: str | None = None,
 ) -> tuple[bool, str | None]:
     """
     Send an email when HR regenerates a candidate's access code (e.g. after
     they got locked out from too many wrong attempts). Same return contract
     as send_invitation_email: (success, error_message).
+
+    valid_from / valid_until are the candidate's scheduled URL window — both
+    optional for backward compatibility but should be passed so the candidate
+    sees when their (now-renewed) access code is actually valid.
     """
     if not _SMTP_CONFIGURED:
         err = "SMTP not configured (missing env vars)"
@@ -163,6 +173,8 @@ def send_regenerated_code_email(
         candidate_name=candidate_name,
         exam_url=exam_url,
         access_code=access_code,
+        valid_from=valid_from,
+        valid_until=valid_until,
         hr_name=hr_name,
         regenerated=True,
     )
@@ -197,6 +209,8 @@ def _build_invitation_message(
     candidate_name: str,
     exam_url: str,
     access_code: str,
+    valid_from=None,
+    valid_until=None,
     hr_name: str | None,
     regenerated: bool = False,
 ) -> EmailMessage:
@@ -204,11 +218,32 @@ def _build_invitation_message(
     Build a multipart email with both plain-text and HTML parts. Modern email
     clients render HTML; older/CLI clients fall back to plain text. Sending
     both maximises deliverability and accessibility.
+
+    valid_from / valid_until are optional for backward compatibility with the
+    regenerate-code path which doesn't (yet) thread the window through. When
+    provided, the email shows a "Scheduled for: <window>" line near the top.
     """
     if regenerated:
         subject = "Action required: Your English Proficiency Test access code has been reset"
     else:
-        subject = "Action required: Complete your English Proficiency Test within 24 hours"
+        subject = "Action required: Your English Proficiency Test invitation"
+
+    # Format the scheduled window once for use in both the plain text and HTML
+    # bodies. Empty string when no window provided (e.g. regenerate-code path).
+    if valid_from is not None and valid_until is not None:
+        # "May 5, 2026 from 2:00 PM to 4:00 PM (UTC)" — explicit UTC since
+        # the candidate's email client doesn't know to convert.
+        date_str = valid_from.strftime("%B %d, %Y")
+        from_time = valid_from.strftime("%I:%M %p").lstrip("0")
+        to_time = valid_until.strftime("%I:%M %p").lstrip("0")
+        # Same-day vs cross-day window
+        if valid_from.date() == valid_until.date():
+            window_str = f"{date_str} from {from_time} to {to_time} (UTC)"
+        else:
+            until_date = valid_until.strftime("%B %d, %Y")
+            window_str = f"{date_str} {from_time} to {until_date} {to_time} (UTC)"
+    else:
+        window_str = ""
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -224,6 +259,7 @@ def _build_invitation_message(
             candidate_name=candidate_name,
             exam_url=exam_url,
             access_code=access_code,
+            window_str=window_str,
             hr_name=hr_name,
             regenerated=regenerated,
         )
@@ -233,6 +269,7 @@ def _build_invitation_message(
             candidate_name=candidate_name,
             exam_url=exam_url,
             access_code=access_code,
+            window_str=window_str,
             hr_name=hr_name,
             regenerated=regenerated,
         ),
@@ -246,6 +283,7 @@ def _plain_text_body(
     candidate_name: str,
     exam_url: str,
     access_code: str,
+    window_str: str,
     hr_name: str | None,
     regenerated: bool,
 ) -> str:
@@ -258,9 +296,14 @@ def _plain_text_body(
     else:
         intro = (
             "You have been invited to complete an English Proficiency "
-            "Assessment as part of the recruitment process. Kindly complete "
-            "the assessment within the next 24 hours."
+            "Assessment as part of the recruitment process."
         )
+
+    # Insert the scheduled window into the IMPORTANT section if provided.
+    schedule_line = (
+        f"  - This test is scheduled for: {window_str}\n"
+        if window_str else ""
+    )
 
     # The signature uses HR's name if known, otherwise just "Stixis HR Team"
     signature = (
@@ -301,7 +344,8 @@ def _plain_text_body(
         f"IMPORTANT\n"
         f"--------------------------------------------\n"
         f"\n"
-        f"  - This invitation expires in 24 hours\n"
+        f"{schedule_line}"
+        f"  - The URL is active only during the scheduled window above\n"
         f"  - The assessment may be attempted only once\n"
         f"  - Three incorrect access code entries will lock the assessment\n"
         f"\n"
@@ -320,6 +364,7 @@ def _html_body(
     candidate_name: str,
     exam_url: str,
     access_code: str,
+    window_str: str,
     hr_name: str | None,
     regenerated: bool,
 ) -> str:
@@ -348,10 +393,16 @@ def _html_body(
     else:
         intro = (
             "You have been invited to complete an English Proficiency "
-            "Assessment as part of the recruitment process. Kindly complete "
-            "the assessment within the next 24 hours."
+            "Assessment as part of the recruitment process."
         )
         cta_label = "Begin Assessment"
+
+    # Schedule line — appended to the IMPORTANT section if a window is provided.
+    schedule_html = (
+        f'<li style="margin:0 0 6px 0;">This test is scheduled for: '
+        f'<strong>{window_str}</strong></li>'
+        if window_str else ""
+    )
 
     # Signature — HR's name if known, otherwise just team name
     if hr_name:
@@ -430,7 +481,8 @@ def _html_body(
         <div style="margin:0 0 28px 0;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;padding:14px 18px;">
           <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:0.5px;">Important</p>
           <ul style="margin:0 0 0 16px;padding:0;font-size:13px;color:#78350f;list-style:disc;">
-            <li style="margin:0 0 4px 0;">This invitation expires in <strong>24 hours</strong></li>
+            {schedule_html}
+            <li style="margin:0 0 4px 0;">The URL is active <strong>only during the scheduled window above</strong></li>
             <li style="margin:0 0 4px 0;">The assessment may be attempted <strong>only once</strong></li>
             <li style="margin:0;">Three incorrect access code entries will <strong>lock the assessment</strong></li>
           </ul>

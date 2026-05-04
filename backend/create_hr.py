@@ -12,7 +12,7 @@ Run from inside the backend/ folder so the imports resolve correctly.
 import argparse
 import sys
 
-from database import SessionLocal, init_db
+from database import SessionLocal
 from models import HRAdmin
 from auth import hash_password
 
@@ -29,9 +29,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # Ensure tables exist (idempotent)
-    init_db()
-
+    # Schema is managed by alembic — assume `alembic upgrade head` has been run.
     email = args.email.strip().lower()
     name = args.name.strip()
 
