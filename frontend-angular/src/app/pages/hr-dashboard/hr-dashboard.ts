@@ -32,6 +32,81 @@ import { Footer } from '../../shared/components/footer/footer';
  *
  * The page is now noticeably shorter and faster to scan.
  */
+/**
+ * Convert a wall-clock date/time entered by HR into a UTC Date, interpreting
+ * the input in the given IANA timezone — NOT in the browser's local zone.
+ *
+ * Why this is non-trivial: JavaScript's `new Date("2026-05-04T16:57")`
+ * parses the string in browser-local time. There is no built-in way to say
+ * "interpret these wall-clock numbers as IST" if the browser is set to PST.
+ * So we compute the offset by formatting a candidate UTC moment back into
+ * the target zone and measuring how far off we are. Two iterations are
+ * enough — this technique is robust across DST transitions because it
+ * uses Intl.DateTimeFormat (which knows the IANA database).
+ *
+ * Returns null if the inputs are malformed (e.g. empty strings).
+ *
+ * Inputs:
+ *   dateStr = "YYYY-MM-DD"
+ *   timeStr = "HH:MM"
+ *   tz      = IANA zone name (e.g. "Asia/Kolkata", "America/Los_Angeles")
+ */
+function wallClockToUtc(dateStr: string, timeStr: string, tz: string): Date | null {
+  if (!dateStr || !timeStr) return null;
+  const [yStr, mStr, dStr] = dateStr.split('-');
+  const [hStr, minStr] = timeStr.split(':');
+  const y = +yStr, m = +mStr, d = +dStr, h = +hStr, min = +minStr;
+  if ([y, m, d, h, min].some(n => Number.isNaN(n))) return null;
+
+  // First guess: pretend the wall clock IS UTC. We'll measure how wrong
+  // this is in the target timezone and correct.
+  const guess = Date.UTC(y, m - 1, d, h, min, 0);
+
+  // Iterate twice — once to correct, once to handle DST edge cases where
+  // the first correction crosses a transition.
+  let utcMs = guess;
+  for (let i = 0; i < 2; i++) {
+    const partsInTz = getPartsInTimezone(new Date(utcMs), tz);
+    const tzAsUtcMs = Date.UTC(
+      partsInTz.year, partsInTz.month - 1, partsInTz.day,
+      partsInTz.hour, partsInTz.minute, 0
+    );
+    // Difference = how many ms ahead the timezone is of UTC at this instant.
+    const offsetMs = tzAsUtcMs - utcMs;
+    // To make the wall clock in tz read (y, m, d, h, min), the actual UTC
+    // moment must be the guess MINUS the timezone's offset.
+    utcMs = guess - offsetMs;
+  }
+  return new Date(utcMs);
+}
+
+/**
+ * Read y/m/d/h/min of a Date as it appears in the given IANA timezone.
+ * Uses Intl.DateTimeFormat — the only stdlib API that knows IANA zones.
+ */
+function getPartsInTimezone(d: Date, tz: string): {
+  year: number; month: number; day: number; hour: number; minute: number;
+} {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const parts: Record<string, string> = {};
+  for (const p of fmt.formatToParts(d)) {
+    if (p.type !== 'literal') parts[p.type] = p.value;
+  }
+  // Intl can return "24" for hour at midnight in some locales — normalize.
+  const hour = parts['hour'] === '24' ? 0 : +parts['hour'];
+  return {
+    year: +parts['year'],
+    month: +parts['month'],
+    day: +parts['day'],
+    hour,
+    minute: +parts['minute'],
+  };
+}
+
 @Component({
   selector: 'app-hr-dashboard',
   standalone: true,
@@ -100,6 +175,11 @@ export class HrDashboard implements OnInit {
   invDate = '';
   invStartTime = '';
   invEndTime = '';
+  // IANA timezone the HR picked. Defaults to IST since most users are in
+  // India; the dropdown lists 7 supported zones (IST + 6 US zones). Keep
+  // these in sync with backend schemas.ALLOWED_TIMEZONES — the backend
+  // rejects any zone not in its allowlist with HTTP 422.
+  invTimezone: string = 'Asia/Kolkata';
   inviteSubmitting = signal(false);
   inviteError = signal('');
   inviteResult = signal<InviteCreateResponse | null>(null);
@@ -235,6 +315,7 @@ export class HrDashboard implements OnInit {
     this.invDate = '';
     this.invStartTime = '';
     this.invEndTime = '';
+    this.invTimezone = 'Asia/Kolkata';
     this.inviteError.set('');
     this.inviteResult.set(null);
     this.inviteCopied.set(false);
@@ -244,6 +325,27 @@ export class HrDashboard implements OnInit {
 
   closeInvite(): void {
     this.inviteOpen.set(false);
+  }
+
+  /**
+   * Programmatically open the native date/time picker when the user clicks
+   * anywhere on the input — not just the icon. Without this, Chrome only
+   * opens the picker when the user clicks the calendar/clock icon on the
+   * right edge of the input, which most users don't realize they need to do.
+   *
+   * showPicker() is a recent addition (Chrome 99+, Firefox 101+, Safari 16+).
+   * The optional chaining (?.()) makes the call a no-op on older browsers,
+   * so we degrade gracefully — old browsers still need an icon click but
+   * nothing throws.
+   *
+   * Why a method (not inline in the template): the template is HTML, and
+   * embedding TypeScript expressions like $any($event.target).showPicker?.()
+   * works but is hard to read and skips type checking. Putting it here gives
+   * us a real cast and a place to add behavior later (e.g. analytics).
+   */
+  openPicker(event: Event): void {
+    const target = event.target as HTMLInputElement & { showPicker?: () => void };
+    target.showPicker?.();
   }
 
   submitInvite(): void {
@@ -264,17 +366,20 @@ export class HrDashboard implements OnInit {
       return;
     }
 
-    // Combine date + time strings into a Date in browser-local time. Format:
-    //   invDate     = "YYYY-MM-DD"
+    // Combine date + time strings into a UTC instant, interpreting the
+    // wall-clock value in the HR-selected timezone (NOT browser local).
+    //   invDate      = "YYYY-MM-DD"
     //   invStartTime = "HH:MM"
-    // → "YYYY-MM-DDTHH:MM" → new Date() parses as browser local → toISOString()
-    // converts to UTC for the backend. Both start and end share the same date.
-    const fromMs = new Date(`${this.invDate}T${this.invStartTime}`).getTime();
-    const untilMs = new Date(`${this.invDate}T${this.invEndTime}`).getTime();
-    if (isNaN(fromMs) || isNaN(untilMs)) {
+    //   invTimezone  = IANA zone name (e.g. "America/Los_Angeles")
+    // wallClockToUtc returns a UTC Date or null if the inputs are malformed.
+    const fromDate = wallClockToUtc(this.invDate, this.invStartTime, this.invTimezone);
+    const untilDate = wallClockToUtc(this.invDate, this.invEndTime, this.invTimezone);
+    if (!fromDate || !untilDate) {
       this.inviteError.set('Invalid date/time. Please re-enter.');
       return;
     }
+    const fromMs = fromDate.getTime();
+    const untilMs = untilDate.getTime();
     if (fromMs < Date.now() - 60_000) {
       this.inviteError.set('Start time cannot be in the past.');
       return;
@@ -292,8 +397,9 @@ export class HrDashboard implements OnInit {
       candidate_name: name,
       candidate_email: email,
       difficulty: this.invDifficulty,
-      valid_from: new Date(fromMs).toISOString(),
-      valid_until: new Date(untilMs).toISOString(),
+      valid_from: fromDate.toISOString(),
+      valid_until: untilDate.toISOString(),
+      timezone: this.invTimezone,
     };
 
     this.inviteSubmitting.set(true);

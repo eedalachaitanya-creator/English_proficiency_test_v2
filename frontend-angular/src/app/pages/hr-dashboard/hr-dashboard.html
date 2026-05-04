@@ -229,8 +229,8 @@
 
         <div class="field">
           <label>Difficulty</label>
-          <div class="difficulty-radios">
-            <label>
+          <div class="difficulty-radios" style="display:flex; gap:24px; align-items:center;">
+            <label style="display:inline-flex; gap:8px; align-items:center; margin:0;">
               <input
                 type="radio"
                 name="difficulty"
@@ -238,7 +238,7 @@
                 [(ngModel)]="invDifficulty">
               <span>Intermediate</span>
             </label>
-            <label>
+            <label style="display:inline-flex; gap:8px; align-items:center; margin:0;">
               <input
                 type="radio"
                 name="difficulty"
@@ -250,33 +250,57 @@
         </div>
 
         <div class="field">
+          <label for="invTimezone">Timezone *</label>
+          <select
+            id="invTimezone"
+            required
+            [(ngModel)]="invTimezone"
+            [disabled]="inviteSubmitting()"
+            style="width:100%; padding:10px 12px; border:1px solid var(--border); border-radius: var(--radius); background:#fff;">
+            <option value="Asia/Kolkata">India Standard Time (IST)</option>
+            <option value="America/New_York">US Eastern Time (ET)</option>
+            <option value="America/Chicago">US Central Time (CT)</option>
+            <option value="America/Denver">US Mountain Time (MT)</option>
+            <option value="America/Los_Angeles">US Pacific Time (PT)</option>
+            <option value="America/Anchorage">US Alaska Time (AKT)</option>
+            <option value="Pacific/Honolulu">US Hawaii Time (HT)</option>
+          </select>
+        </div>
+
+        <div class="field">
           <label for="invDate">Test Date *</label>
           <input
             type="date"
             id="invDate"
             required
             [(ngModel)]="invDate"
-            [disabled]="inviteSubmitting()">
+            [disabled]="inviteSubmitting()"
+            (click)="openPicker($event)"
+            style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:14px; font-family:inherit; background:#fff; color:var(--text); line-height:1.4; cursor:pointer;">
         </div>
 
         <div class="field" style="display:flex; gap:12px;">
-          <div style="flex:1;">
+          <div style="flex:1; min-width:0;">
             <label for="invStartTime">Start Time *</label>
             <input
               type="time"
               id="invStartTime"
               required
               [(ngModel)]="invStartTime"
-              [disabled]="inviteSubmitting()">
+              [disabled]="inviteSubmitting()"
+              (click)="openPicker($event)"
+              style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:14px; font-family:inherit; background:#fff; color:var(--text); line-height:1.4; cursor:pointer;">
           </div>
-          <div style="flex:1;">
+          <div style="flex:1; min-width:0;">
             <label for="invEndTime">End Time *</label>
             <input
               type="time"
               id="invEndTime"
               required
               [(ngModel)]="invEndTime"
-              [disabled]="inviteSubmitting()">
+              [disabled]="inviteSubmitting()"
+              (click)="openPicker($event)"
+              style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:14px; font-family:inherit; background:#fff; color:var(--text); line-height:1.4; cursor:pointer;">
           </div>
         </div>
         <small class="text-muted" style="display:block; margin-top:4px; font-size:12px;">

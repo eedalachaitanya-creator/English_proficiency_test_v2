@@ -238,6 +238,11 @@ def create_invite(
         reading_seconds=settings["reading_seconds"],
         writing_seconds=settings["writing_seconds"],
         speaking_seconds=settings["speaking_seconds"],
+        # Snapshot HR's chosen timezone onto the row. Resends and
+        # regenerate-code calls later read it from here, so the candidate
+        # always sees their original local-time window even if HR's
+        # browser/preferences change between sends.
+        display_timezone=payload.timezone,
     )
     db.add(inv)
     db.commit()
@@ -256,6 +261,7 @@ def create_invite(
         valid_from=inv.valid_from,
         valid_until=inv.expires_at,
         hr_name=hr.name,
+        display_timezone=inv.display_timezone,
     )
 
     # Persist the email send result so the dashboard can surface failures to HR
@@ -336,6 +342,7 @@ def regenerate_code(
         valid_from=inv.valid_from,
         valid_until=inv.expires_at,
         hr_name=hr.name,
+        display_timezone=inv.display_timezone,
     )
 
     # Update email tracking. Regenerate replaces the previous status entirely:
@@ -454,6 +461,7 @@ def resend_invitation_email(
         valid_from=inv.valid_from,
         valid_until=inv.expires_at,
         hr_name=hr.name,
+        display_timezone=inv.display_timezone,
     )
 
     # Update tracking columns (same logic as create_invite). Resend replaces

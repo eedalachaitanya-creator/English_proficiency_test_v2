@@ -7,7 +7,7 @@ what fields to expose to the client (e.g., never expose `correct_answer`).
 """
 from datetime import datetime
 from typing import Literal, Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # ============================================================
@@ -27,6 +27,20 @@ class HRLoginResponse(BaseModel):
 # ============================================================
 # Invitation creation (HR side)
 # ============================================================
+# IANA timezone names accepted from HR. Allowlist (not free-text) so an
+# attacker or buggy frontend can't put garbage in the DB column. Keep this
+# list in sync with the dropdown options in hr-dashboard.html.
+ALLOWED_TIMEZONES = frozenset({
+    "Asia/Kolkata",        # India Standard Time
+    "America/New_York",    # US Eastern
+    "America/Chicago",     # US Central
+    "America/Denver",      # US Mountain
+    "America/Los_Angeles", # US Pacific
+    "America/Anchorage",   # US Alaska
+    "Pacific/Honolulu",    # US Hawaii (no DST)
+})
+
+
 class InviteCreateRequest(BaseModel):
     candidate_name: str = Field(min_length=1, max_length=100)
     candidate_email: EmailStr
@@ -36,6 +50,19 @@ class InviteCreateRequest(BaseModel):
     # Values are sent as ISO-8601 UTC strings from the Angular form.
     valid_from: datetime
     valid_until: datetime
+    # IANA timezone name HR selected. Required (no default) so a forgotten
+    # frontend field fails fast at validation rather than silently saving
+    # the wrong zone. Validated against ALLOWED_TIMEZONES below.
+    timezone: str = Field(min_length=1, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def _check_timezone(cls, v: str) -> str:
+        if v not in ALLOWED_TIMEZONES:
+            raise ValueError(
+                f"timezone must be one of {sorted(ALLOWED_TIMEZONES)}. Got: {v!r}"
+            )
+        return v
 
 
 class InviteCreateResponse(BaseModel):

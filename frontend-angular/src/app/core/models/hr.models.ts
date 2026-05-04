@@ -34,9 +34,15 @@ export interface InviteCreateRequest {
   candidate_email: string;
   difficulty: 'intermediate' | 'expert';
   // ISO-8601 UTC strings — see hr-dashboard.ts submitInvite() for the
-  // browser-local-to-UTC conversion. Both required.
+  // wall-clock-to-UTC conversion (interpreted in the selected timezone,
+  // NOT browser local). Both required.
   valid_from: string;
   valid_until: string;
+  // IANA timezone name (e.g. "Asia/Kolkata", "America/New_York") that HR
+  // selected in the invite modal. Backend uses this to render the
+  // scheduled window in the candidate's invitation email. Allowed values
+  // are gated server-side; see schemas.ALLOWED_TIMEZONES in the backend.
+  timezone: string;
 }
 
 export interface InviteCreateResponse {

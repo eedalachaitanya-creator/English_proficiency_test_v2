@@ -181,6 +181,16 @@ class Invitation(Base):
     email_status = Column(String(20), default="pending", nullable=False)
     email_error = Column(String(255), nullable=True)
 
+    # IANA timezone name (e.g. "Asia/Kolkata", "America/New_York") that the
+    # HR picked when creating the invitation. Used ONLY for rendering the
+    # scheduled window in the candidate's invitation email — the database
+    # itself stays in UTC for valid_from/expires_at and all internal logic.
+    #
+    # Default "UTC" exists so legacy rows (created before this column) and
+    # any future code path that forgets to pass a timezone still produce
+    # a valid email — it just shows the time in UTC like the old behavior.
+    display_timezone = Column(String(64), default="UTC", nullable=False)
+
     hr = relationship("HRAdmin", back_populates="invitations")
     passage = relationship("Passage")
     writing_topic = relationship("WritingTopic")

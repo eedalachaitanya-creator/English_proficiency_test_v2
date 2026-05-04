@@ -25,3 +25,4 @@ azure-cognitiveservices-speech>=1.40 # Pronunciation assessment
 
 # Email (Day 3)
 aiosmtplib>=3.0
+tzdata

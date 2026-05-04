@@ -33,8 +33,14 @@ import os
 import smtplib
 import socket
 import ssl
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
+
+# zoneinfo is the stdlib IANA timezone database (Python 3.9+). On Windows
+# the IANA database is not bundled with the OS — install tzdata if you see
+# ZoneInfoNotFoundError: `pip install tzdata`.
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import certifi
 
@@ -85,6 +91,7 @@ def send_invitation_email(
     valid_from,
     valid_until,
     hr_name: str | None = None,
+    display_timezone: str | None = None,
 ) -> tuple[bool, str | None]:
     """
     Send an invitation email containing the test URL and 6-digit access code.
@@ -114,6 +121,7 @@ def send_invitation_email(
         valid_from=valid_from,
         valid_until=valid_until,
         hr_name=hr_name,
+        display_timezone=display_timezone,
     )
 
     try:
@@ -153,6 +161,7 @@ def send_regenerated_code_email(
     valid_from=None,
     valid_until=None,
     hr_name: str | None = None,
+    display_timezone: str | None = None,
 ) -> tuple[bool, str | None]:
     """
     Send an email when HR regenerates a candidate's access code (e.g. after
@@ -177,6 +186,7 @@ def send_regenerated_code_email(
         valid_until=valid_until,
         hr_name=hr_name,
         regenerated=True,
+        display_timezone=display_timezone,
     )
 
     try:
@@ -203,6 +213,65 @@ def send_regenerated_code_email(
 # ---------------------------------------------------------------------------
 # Internal — message construction
 # ---------------------------------------------------------------------------
+
+# Friendly display labels for each IANA timezone we accept. Keep in sync with
+# schemas.ALLOWED_TIMEZONES and the dropdown options in hr-dashboard.html.
+# Anything not in this map falls back to the IANA name itself, which is ugly
+# but accurate — that's the right tradeoff (loud failure beats wrong label).
+_TZ_LABELS = {
+    "Asia/Kolkata": "IST",
+    "America/New_York": "ET",
+    "America/Chicago": "CT",
+    "America/Denver": "MT",
+    "America/Los_Angeles": "PT",
+    "America/Anchorage": "AKT",
+    "Pacific/Honolulu": "HT",
+    "UTC": "UTC",
+}
+
+
+def _format_window(valid_from: datetime, valid_until: datetime, tz_name: str) -> str:
+    """
+    Render the [valid_from, valid_until] window as a human-readable string in
+    the given IANA timezone. Example output:
+        "May 4, 2026 from 4:57 PM to 5:57 PM (IST)"
+
+    Inputs are NAIVE UTC datetimes (the convention used everywhere else in
+    this codebase — see _utcnow() in models.py). We attach UTC tzinfo
+    explicitly before astimezone() because Python 3.12+ deprecates implicit
+    UTC assumption on naive datetimes.
+
+    If tz_name isn't a valid IANA zone (shouldn't happen — schemas.py has
+    an allowlist — but defense in depth), fall back to UTC so the email
+    still goes out instead of raising mid-send and losing the message.
+    """
+    try:
+        target_tz = ZoneInfo(tz_name)
+        label = _TZ_LABELS.get(tz_name, tz_name)
+    except ZoneInfoNotFoundError:
+        # Bad zone name. Log loudly, don't crash the send.
+        print(f"[smtp] WARN: unknown timezone {tz_name!r}, falling back to UTC.")
+        target_tz = ZoneInfo("UTC")
+        label = "UTC"
+
+    # Attach UTC, then convert. .replace(tzinfo=...) on a naive dt does NOT
+    # convert — it just labels. astimezone() is what shifts the wall clock.
+    from_local = valid_from.replace(tzinfo=timezone.utc).astimezone(target_tz)
+    until_local = valid_until.replace(tzinfo=timezone.utc).astimezone(target_tz)
+
+    date_str = from_local.strftime("%B %d, %Y")
+    from_time = from_local.strftime("%I:%M %p").lstrip("0")
+    to_time = until_local.strftime("%I:%M %p").lstrip("0")
+
+    # Same-day vs cross-day window. After timezone conversion the dates can
+    # diverge even when valid_from == valid_until in UTC (e.g. a window that
+    # spans midnight in IST), so this check has to use the converted values.
+    if from_local.date() == until_local.date():
+        return f"{date_str} from {from_time} to {to_time} ({label})"
+    until_date = until_local.strftime("%B %d, %Y")
+    return f"{date_str} {from_time} to {until_date} {to_time} ({label})"
+
+
 def _build_invitation_message(
     *,
     candidate_email: str,
@@ -213,6 +282,7 @@ def _build_invitation_message(
     valid_until=None,
     hr_name: str | None,
     regenerated: bool = False,
+    display_timezone: str | None = None,
 ) -> EmailMessage:
     """
     Build a multipart email with both plain-text and HTML parts. Modern email
@@ -231,17 +301,11 @@ def _build_invitation_message(
     # Format the scheduled window once for use in both the plain text and HTML
     # bodies. Empty string when no window provided (e.g. regenerate-code path).
     if valid_from is not None and valid_until is not None:
-        # "May 5, 2026 from 2:00 PM to 4:00 PM (UTC)" — explicit UTC since
-        # the candidate's email client doesn't know to convert.
-        date_str = valid_from.strftime("%B %d, %Y")
-        from_time = valid_from.strftime("%I:%M %p").lstrip("0")
-        to_time = valid_until.strftime("%I:%M %p").lstrip("0")
-        # Same-day vs cross-day window
-        if valid_from.date() == valid_until.date():
-            window_str = f"{date_str} from {from_time} to {to_time} (UTC)"
-        else:
-            until_date = valid_until.strftime("%B %d, %Y")
-            window_str = f"{date_str} {from_time} to {until_date} {to_time} (UTC)"
+        # Convert from naive UTC (how the DB stores it) to the HR's chosen
+        # display timezone before formatting. Falls back to "UTC" if the
+        # caller didn't pass a timezone — preserves the old behavior for
+        # any caller that hasn't been updated yet.
+        window_str = _format_window(valid_from, valid_until, display_timezone or "UTC")
     else:
         window_str = ""
 
