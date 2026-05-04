@@ -5,7 +5,7 @@ Run from inside the backend/ folder:
     uvicorn main:app --reload --port 8000
 
 Then visit http://localhost:8000/api/health to confirm the server is up.
-The frontend (../frontend) is served at the root URL.
+The Angular SPA (built into ../frontend-angular/dist) is served at the root URL.
 """
 import os
 import warnings
@@ -20,18 +20,12 @@ from starlette.middleware.sessions import SessionMiddleware
 # database.py calls load_dotenv() at import time, so env vars are populated by here.
 import database  # noqa: F401
 
-# DEV_SESSION_SECRET = "dev-only-secret-change-in-production"
-# SESSION_SECRET = os.getenv("SESSION_SECRET", DEV_SESSION_SECRET)
-# APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
-# FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 IS_PRODUCTION = ENVIRONMENT == "production"
 
 DEV_SESSION_SECRET = "dev-only-secret-change-in-production"
 SESSION_SECRET = os.getenv("SESSION_SECRET", DEV_SESSION_SECRET)
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 # Production must have a real session secret — refuse to start otherwise.
 if IS_PRODUCTION and SESSION_SECRET == DEV_SESSION_SECRET:

@@ -89,24 +89,23 @@ English_Proficiency/
 │   ├── .env.example         ← copy to .env and fill in real values
 │   └── .env                 ← real values (gitignored)
 │
-└── frontend/                ← static HTML/CSS/JS, served by FastAPI
-    ├── index.html           ← HR sign-in page (the entry point — http://localhost:8000)
-    ├── hr-dashboard.html    ← HR-only: candidate list, invite modal, score detail
-    ├── instructions.html    ← Candidate-facing: test overview before they start
-    ├── reading.html         ← Section 1 of 3: passage + 15 MCQs + 30-min timer
-    ├── writing.html         ← Section 2 of 3: essay prompt + textarea + 20-min timer
-    ├── speaking.html        ← Section 3 of 3: 3 speaking topics + audio recorder
-    ├── submitted.html       ← Confirmation page (no scores shown to candidate)
-    ├── css/
-    │   └── style.css        ← shared styles, brand palette (deep navy + orange)
-    └── js/
-        ├── common.js        ← shared utilities: api(), Modal.confirm/alert(), timer, sessionStorage
-        ├── login.js         ← HR login form logic
-        ├── hr.js            ← HR dashboard rendering + invite modal + audio playback
-        ├── reading.js       ← passage rendering, answer tracking, 30-min timer
-        ├── writing.js       ← essay textarea, live word counter, auto-save, 20-min timer
-        └── speaking.js      ← MediaRecorder integration, per-topic flow, final submit
+└── frontend-angular/        ← Angular SPA (HR dashboard + candidate test flow)
+    ├── src/app/pages/       ← route-level components: login, hr-dashboard, candidate-detail,
+    │                            exam-entry, instructions, reading, writing, speaking, submitted, content-*
+    ├── src/app/core/        ← services (api, auth, store, force-submit), guards, models
+    ├── src/app/shared/      ← reusable components (topnav, footer, radar-breakdown, modal)
+    ├── package.json         ← npm dependencies (Angular 21, chart.js)
+    └── dist/                ← `ng build` output; FastAPI serves this at `/` (gitignored)
 ```
+
+Build it once before starting the backend in production:
+
+```bash
+cd frontend-angular && npm install && ng build
+```
+
+For day-to-day development run the Angular dev server (`ng serve`, port 4200) alongside
+uvicorn (port 8000) — the Angular app proxies `/api/*` requests to the backend.
 
 ### What each backend file does
 
