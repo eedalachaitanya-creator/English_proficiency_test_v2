@@ -533,6 +533,9 @@ def list_results(hr: HRAdmin = Depends(require_hr), db: Session = Depends(get_db
                 speaking_score=s.speaking_score if s else None,
                 total_score=s.total_score if s else None,
                 rating=s.rating if s else None,
+                include_reading=inv.include_reading,
+                include_writing=inv.include_writing,
+                include_speaking=inv.include_speaking,
                 # Pass email columns straight through. Only include the error
                 # string when status is "failed" — for "sent" or "pending"
                 # rows the error column should already be null, but we belt-

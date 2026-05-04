@@ -266,6 +266,12 @@ class ScoreSummary(BaseModel):
     speaking_score: Optional[int]
     total_score: Optional[int]
     rating: Optional[str]
+    # Per-invitation section selection — drives the small "R · W · S" chip
+    # in the dashboard so HR can see at a glance what test the candidate
+    # took. Defaults to True for legacy rows (pre-feature, all-three-test).
+    include_reading: bool = True
+    include_writing: bool = True
+    include_speaking: bool = True
     # Email delivery state. One of:
     #   "pending" — send not yet attempted (legacy rows, or SMTP not configured)
     #   "sent"    — SMTP accepted the message
