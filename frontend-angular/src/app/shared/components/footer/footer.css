@@ -1,8 +1,0 @@
-/* Component-scoped styles for Footer.
- *
- * Visual design (.footer — navy-light background, white text, centered)
- * lives in the global src/styles.css from File 1. Nothing to override.
- */
-:host {
-  display: block;
-}
