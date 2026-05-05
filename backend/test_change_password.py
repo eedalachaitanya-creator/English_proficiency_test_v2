@@ -140,8 +140,8 @@ def test_change_password_no_session_rejected():
 
 def test_change_password_admin_cannot_use_hr_endpoint():
     """An admin session must NOT be able to change password via the HR
-    endpoint — admin password change goes through a separate route (or
-    CLI, today). Regression for the role-enforcement work."""
+    endpoint — admin password change goes through a separate route.
+    Regression for the role-enforcement work."""
     db = SessionLocal()
     admin = HRAdmin(
         name="Pwd Admin",
@@ -167,3 +167,89 @@ def test_change_password_admin_cannot_use_hr_endpoint():
         assert r.status_code == 401, r.text
     finally:
         _drop(aid)
+
+
+# ----------------------------------------------------------------------
+# Admin /api/admin/change-password — mirrors HR tests, must reject HRs
+# ----------------------------------------------------------------------
+
+def _make_admin(password: str = "adminPass123") -> HRAdmin:
+    """Insert a fresh admin row. Caller deletes via _drop()."""
+    db = SessionLocal()
+    admin = HRAdmin(
+        name="Pwd Admin",
+        email=f"pwd-admin-{datetime.now(timezone.utc).timestamp()}@example.com",
+        password_hash=hash_password(password),
+        role="admin",
+    )
+    db.add(admin)
+    db.commit()
+    db.refresh(admin)
+    db.close()
+    return admin
+
+
+def _login_admin(email: str, password: str) -> TestClient:
+    c = TestClient(app)
+    r = c.post("/api/admin/login", json={"email": email, "password": password})
+    assert r.status_code == 200, f"admin login failed: {r.status_code} {r.text}"
+    return c
+
+
+def test_admin_change_password_happy_path():
+    """Admin can change their own password via /api/admin/change-password."""
+    admin = _make_admin(password="adminOriginal1")
+    try:
+        c = _login_admin(admin.email, "adminOriginal1")
+        r = c.post(
+            "/api/admin/change-password",
+            json={"current_password": "adminOriginal1", "new_password": "adminNew456"},
+        )
+        assert r.status_code == 200, r.text
+        # Verify hash actually changed
+        db = SessionLocal()
+        refreshed = db.query(HRAdmin).filter(HRAdmin.id == admin.id).first()
+        db.close()
+        assert verify_password("adminNew456", refreshed.password_hash)
+        assert not verify_password("adminOriginal1", refreshed.password_hash)
+    finally:
+        _drop(admin.id)
+
+
+def test_admin_change_password_wrong_current_rejected():
+    """Wrong current password → 401, hash unchanged."""
+    admin = _make_admin(password="adminOriginal1")
+    try:
+        c = _login_admin(admin.email, "adminOriginal1")
+        r = c.post(
+            "/api/admin/change-password",
+            json={"current_password": "WRONG", "new_password": "adminNew456"},
+        )
+        assert r.status_code == 401
+    finally:
+        _drop(admin.id)
+
+
+def test_admin_change_password_no_session_rejected():
+    """Anonymous → 401."""
+    c = TestClient(app)
+    r = c.post(
+        "/api/admin/change-password",
+        json={"current_password": "x", "new_password": "adminNew456"},
+    )
+    assert r.status_code == 401
+
+
+def test_admin_change_password_hr_cannot_use_admin_endpoint():
+    """An HR session must NOT be able to change password via the admin
+    endpoint — symmetric to test_change_password_admin_cannot_use_hr_endpoint."""
+    hr = _make_hr(password="hrpass123")
+    try:
+        c = _login_client(hr.email, "hrpass123")
+        r = c.post(
+            "/api/admin/change-password",
+            json={"current_password": "hrpass123", "new_password": "newPass456"},
+        )
+        assert r.status_code == 401, r.text
+    finally:
+        _drop(hr.id)

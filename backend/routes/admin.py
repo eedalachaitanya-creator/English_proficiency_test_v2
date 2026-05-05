@@ -21,6 +21,7 @@ from models import HRAdmin
 from schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
+    ChangePasswordRequest,
     HRCreateByAdminRequest,
     HRCreateByAdminResponse,
     HRSummary,
@@ -78,6 +79,32 @@ def me(admin: HRAdmin = Depends(require_admin)):
     return AdminLoginResponse(
         id=admin.id, name=admin.name, email=admin.email, role=admin.role
     )
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    admin: HRAdmin = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Change the logged-in admin's password. Mirrors POST /api/hr/change-
+    password (same schema, same bcrypt re-hash, same session-preservation
+    semantics) but gated on require_admin so HR sessions can't reach it.
+
+    Admins start with a CLI-set password (create_admin.py); rotating it
+    in-product avoids the "first admin gets stuck with whatever the
+    deploy script gave them" trap.
+    """
+    if not verify_password(payload.current_password, admin.password_hash):
+        raise HTTPException(
+            status_code=401,
+            detail="Current password is incorrect.",
+        )
+
+    admin.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"status": "password_changed"}
 
 
 @router.get("/session-status")

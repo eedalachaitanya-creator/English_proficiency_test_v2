@@ -25,11 +25,17 @@ class HRLoginResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """POST /api/hr/change-password. The HR's session cookie identifies
-    them; current_password is required to defend against session-hijack
-    + drive-by changes (the same defense Gmail/GitHub use). new_password
-    has the same min-length floor as create_hr.py CLI for consistency."""
-    current_password: str = Field(min_length=1, max_length=128)
+    """POST /api/hr/change-password (and the parallel /api/admin/...).
+    The session cookie identifies the user; current_password is required
+    to defend against session-hijack and drive-by changes (the same
+    defense Gmail/GitHub use). new_password has the same min-length floor
+    as create_hr.py CLI for consistency.
+
+    No max_length on current_password — Pydantic shouldn't be the
+    gatekeeper here, bcrypt's verify is. Capping it would lock out any
+    user who originally chose a >128-char password (rare but real for
+    passphrase users)."""
+    current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=6, max_length=128)
 
 
