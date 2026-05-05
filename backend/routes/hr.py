@@ -26,6 +26,8 @@ from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingRe
 from schemas import (
     HRLoginRequest,
     HRLoginResponse,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     InviteCreateRequest,
@@ -43,6 +45,14 @@ from auth import (
     generate_access_code,
     require_hr,
 )
+
+from jwt_service import (
+    create_token_pair,
+    create_access_token,
+    decode_token,
+    InvalidTokenError,
+)
+
 from email_service import (
     send_invitation_email,
     send_regenerated_code_email,
@@ -173,7 +183,21 @@ def login(payload: HRLoginRequest, request: Request, db: Session = Depends(get_d
     # Pin the session to the current password_changed_at so a future
     # rotation invalidates this session via _resolve_user_with_role.
     request.session["pw_v"] = hr.password_changed_at.isoformat()
-    return HRLoginResponse(id=hr.id, name=hr.name, email=hr.email)
+
+    # Mint JWT tokens alongside the session cookie. Frontend stores these
+    # and uses Authorization: Bearer for new API calls. Cookie path stays
+    # for backward-compat with existing routes.
+    tokens = create_token_pair(user_id=hr.id, role="hr")
+
+    return HRLoginResponse(
+        id=hr.id,
+        name=hr.name,
+        email=hr.email,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        token_type=tokens["token_type"],
+        expires_in=tokens["expires_in"],
+    )
 
 
 @router.post("/logout")
@@ -181,6 +205,38 @@ def logout(request: Request):
     """Clear the session. Idempotent — safe to call when not logged in."""
     request.session.pop("hr_admin_id", None)
     return {"status": "logged_out"}
+
+
+@router.post("/refresh", response_model=RefreshTokenResponse)
+def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    Trade a valid refresh token for a new access token. Frontend calls
+    this when the access token expires (30 min). Refresh tokens last 1
+    day, so HR stays logged in for a full day without re-entering pw.
+    All failure modes return the same generic 401 — never leak whether
+    a specific token was revoked vs malformed vs expired.
+    """
+    GENERIC_401 = "Invalid or expired refresh token. Please log in again."
+
+    try:
+        decoded = decode_token(payload.refresh_token, expected_type="refresh")
+    except InvalidTokenError:
+        raise HTTPException(status_code=401, detail=GENERIC_401)
+
+    try:
+        user_id = int(decoded.get("sub", ""))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail=GENERIC_401)
+
+    hr = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    if not hr or hr.role != "hr" or decoded.get("role") != "hr":
+        raise HTTPException(status_code=401, detail=GENERIC_401)
+
+    new_access = create_access_token(user_id=hr.id, role="hr")
+    return RefreshTokenResponse(
+        access_token=new_access,
+        expires_in=int(os.getenv("JWT_ACCESS_MINUTES", "30")) * 60,
+    )
 
 
 @router.get("/me", response_model=HRLoginResponse)

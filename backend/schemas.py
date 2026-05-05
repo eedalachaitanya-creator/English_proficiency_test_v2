@@ -22,6 +22,25 @@ class HRLoginResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
+    # JWT tokens added to login response. Frontend stores these in
+    # localStorage and sends Authorization: Bearer <access_token>
+    # on every API call. Refresh exchanged at /api/hr/refresh.
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int  # access_token lifetime in seconds
+
+
+class RefreshTokenRequest(BaseModel):
+    """POST /api/hr/refresh — trade a refresh token for a new access token."""
+    refresh_token: str
+
+
+class RefreshTokenResponse(BaseModel):
+    """Response from /api/hr/refresh. Same shape as the token-pair fields in HRLoginResponse."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -63,11 +82,31 @@ class AdminLoginRequest(BaseModel):
 class AdminLoginResponse(BaseModel):
     """Returned by /api/admin/login and /api/admin/me. Includes role so
     the frontend can sanity-check (defense-in-depth — backend auth is the
-    real boundary)."""
+    real boundary).
+
+    JWT token fields added for the new auth path. /me returns these as
+    None since /me doesn't mint new tokens (you'd never want it to —
+    /me is an idempotent identity check, not a credential issuance)."""
     id: int
     name: str
     email: EmailStr
     role: str  # always "admin" — the route returns 401 for any other role
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = "bearer"
+    expires_in: int | None = None
+
+
+class AdminRefreshTokenRequest(BaseModel):
+    """POST /api/admin/refresh — trade a refresh token for a new access token."""
+    refresh_token: str
+
+
+class AdminRefreshTokenResponse(BaseModel):
+    """Response from /api/admin/refresh. Same shape as the token-pair fields in AdminLoginResponse."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
 
 
 class HRSummary(BaseModel):

@@ -21,10 +21,19 @@ from models import HRAdmin
 from schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
+    AdminRefreshTokenRequest,
+    AdminRefreshTokenResponse,
     ChangePasswordRequest,
     HRCreateByAdminRequest,
     HRCreateByAdminResponse,
     HRSummary,
+)
+
+from jwt_service import (
+    create_token_pair,
+    create_access_token,
+    decode_token,
+    InvalidTokenError,
 )
 
 
@@ -47,9 +56,12 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 def login(payload: AdminLoginRequest, request: Request, db: Session = Depends(get_db)):
     """
     Validate admin email + password, set the session cookie, return the
-    admin's profile. Same generic 401 message for every failure mode
-    ("no such user", "wrong password", "account exists but is HR not admin")
-    — don't leak which one failed.
+    admin's profile + JWT tokens. Same generic 401 message for every
+    failure mode ("no such user", "wrong password", "account exists but
+    is HR not admin") — don't leak which one failed.
+
+    Both auth mechanisms are issued on success: session cookie (existing)
+    and JWT access+refresh tokens (new). Frontend uses JWT going forward.
     """
     user = db.query(HRAdmin).filter(HRAdmin.email == payload.email.lower()).first()
     if (
@@ -63,8 +75,20 @@ def login(payload: AdminLoginRequest, request: Request, db: Session = Depends(ge
     # Pin the session to the admin's current password_changed_at — same
     # pattern as HR login, enables session invalidation on rotation.
     request.session["pw_v"] = user.password_changed_at.isoformat()
+
+    # Mint JWT tokens with role="admin" so require_jwt_admin accepts them
+    # but require_jwt_hr rejects them (cross-role token misuse defense).
+    tokens = create_token_pair(user_id=user.id, role="admin")
+
     return AdminLoginResponse(
-        id=user.id, name=user.name, email=user.email, role=user.role
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        token_type=tokens["token_type"],
+        expires_in=tokens["expires_in"],
     )
 
 
@@ -73,6 +97,36 @@ def logout(request: Request):
     """Clear the session. Idempotent — same key as HR logout uses."""
     request.session.pop("hr_admin_id", None)
     return {"status": "logged_out"}
+
+
+@router.post("/refresh", response_model=AdminRefreshTokenResponse)
+def refresh_access_token(payload: AdminRefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    Trade a valid admin refresh token for a new admin access token.
+    Mirror of /api/hr/refresh but enforces role="admin" — an HR refresh
+    token cannot be used here, even if it's valid otherwise.
+    """
+    GENERIC_401 = "Invalid or expired refresh token. Please log in again."
+
+    try:
+        decoded = decode_token(payload.refresh_token, expected_type="refresh")
+    except InvalidTokenError:
+        raise HTTPException(status_code=401, detail=GENERIC_401)
+
+    try:
+        user_id = int(decoded.get("sub", ""))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail=GENERIC_401)
+
+    user = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    if not user or user.role != "admin" or decoded.get("role") != "admin":
+        raise HTTPException(status_code=401, detail=GENERIC_401)
+
+    new_access = create_access_token(user_id=user.id, role="admin")
+    return AdminRefreshTokenResponse(
+        access_token=new_access,
+        expires_in=int(os.getenv("JWT_ACCESS_MINUTES", "30")) * 60,
+    )
 
 
 @router.get("/me", response_model=AdminLoginResponse)

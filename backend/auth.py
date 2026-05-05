@@ -151,3 +151,109 @@ def require_admin(request: Request, db: Session = Depends(get_db)) -> HRAdmin:
     are explicitly NOT accepted.
     """
     return _resolve_user_with_role(request, db, expected_role="admin")
+
+# ------------------------------------------------------------------
+# JWT dependencies
+# ------------------------------------------------------------------
+
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from jwt_service import decode_token, InvalidTokenError
+
+# HTTPBearer is FastAPI's built-in helper for extracting Bearer tokens
+# from the Authorization header. auto_error=False so we can return our
+# generic 401 instead of FastAPI's default "Not authenticated" body —
+# avoids leaking which dep failed when an attacker probes routes.
+_bearer_scheme = HTTPBearer(auto_error=False, bearerFormat="JWT")
+
+
+def _resolve_jwt_user_with_role(
+    creds: HTTPAuthorizationCredentials | None,
+    db: Session,
+    expected_role: str,
+) -> HRAdmin:
+    """
+    Shared logic: extract the JWT, validate it, look up the HRAdmin row,
+    enforce the role. Same generic-401 policy as the cookie path — no
+    distinct error messages, even for "expired token" vs "wrong role"
+    vs "deleted user". Don't help an attacker enumerate.
+    """
+    GENERIC_401 = "Not authenticated. Please log in."
+
+    if creds is None or not creds.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        payload = decode_token(creds.credentials, expected_type="access")
+    except InvalidTokenError:
+        # Covers expired, malformed, wrong-issuer, and wrong-type tokens.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # JWT payload uses string `sub` per the JWT spec. Convert back to int
+    # for the DB query, but defensively — if someone forged a token with
+    # a non-numeric sub it shouldn't crash the route.
+    try:
+        user_id = int(payload.get("sub", ""))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    hr = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    if not hr:
+        # Token points to a deleted user — reject.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Cross-check: the role claim in the token must match what we expect
+    # AND match the user's current DB role. If a user was demoted from
+    # admin to hr after their token was issued, their old admin token
+    # should stop working.
+    token_role = payload.get("role")
+    if token_role != expected_role or hr.role != expected_role:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return hr
+
+
+def require_jwt_hr(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> HRAdmin:
+    """
+    JWT-protected counterpart to require_hr. Use on routes that should
+    accept the new Authorization: Bearer <token> header.
+
+        @router.get("/some-jwt-protected-thing")
+        def handler(hr: HRAdmin = Depends(require_jwt_hr)):
+            ...
+    """
+    return _resolve_jwt_user_with_role(creds, db, expected_role="hr")
+
+
+def require_jwt_admin(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> HRAdmin:
+    """
+    JWT-protected counterpart to require_admin. For admin-portal routes
+    that authenticate via JWT instead of the session cookie.
+    """
+    return _resolve_jwt_user_with_role(creds, db, expected_role="admin")
