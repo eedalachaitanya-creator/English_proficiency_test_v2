@@ -92,6 +92,7 @@ def send_invitation_email(
     valid_until,
     hr_name: str | None = None,
     display_timezone: str | None = None,
+    timezone_short_label: str | None = None,
     include_reading: bool = True,
     include_writing: bool = True,
     include_speaking: bool = True,
@@ -109,6 +110,10 @@ def send_invitation_email(
     to copy/paste from the dashboard popup.
 
     All failures are also printed to the server log with [smtp] prefix.
+
+    `timezone_short_label` is the friendly abbreviation ("IST", "PT") looked
+    up by the route handler from the supported_timezones table. Optional —
+    when None, the email falls back to showing the raw IANA name.
     """
     if not _SMTP_CONFIGURED:
         err = "SMTP not configured (missing env vars)"
@@ -125,6 +130,7 @@ def send_invitation_email(
         valid_until=valid_until,
         hr_name=hr_name,
         display_timezone=display_timezone,
+        timezone_short_label=timezone_short_label,
         include_reading=include_reading,
         include_writing=include_writing,
         include_speaking=include_speaking,
@@ -168,6 +174,7 @@ def send_regenerated_code_email(
     valid_until=None,
     hr_name: str | None = None,
     display_timezone: str | None = None,
+    timezone_short_label: str | None = None,
     include_reading: bool = True,
     include_writing: bool = True,
     include_speaking: bool = True,
@@ -180,6 +187,9 @@ def send_regenerated_code_email(
     valid_from / valid_until are the candidate's scheduled URL window — both
     optional for backward compatibility but should be passed so the candidate
     sees when their (now-renewed) access code is actually valid.
+
+    `timezone_short_label` is the friendly abbreviation ("IST", "PT") from
+    the supported_timezones table. The route handler looks it up.
     """
     if not _SMTP_CONFIGURED:
         err = "SMTP not configured (missing env vars)"
@@ -196,6 +206,7 @@ def send_regenerated_code_email(
         hr_name=hr_name,
         regenerated=True,
         display_timezone=display_timezone,
+        timezone_short_label=timezone_short_label,
         include_reading=include_reading,
         include_writing=include_writing,
         include_speaking=include_speaking,
@@ -384,23 +395,19 @@ def send_hr_welcome_email(
 # Internal — message construction
 # ---------------------------------------------------------------------------
 
-# Friendly display labels for each IANA timezone we accept. Keep in sync with
-# schemas.ALLOWED_TIMEZONES and the dropdown options in hr-dashboard.html.
-# Anything not in this map falls back to the IANA name itself, which is ugly
-# but accurate — that's the right tradeoff (loud failure beats wrong label).
-_TZ_LABELS = {
-    "Asia/Kolkata": "IST",
-    "America/New_York": "ET",
-    "America/Chicago": "CT",
-    "America/Denver": "MT",
-    "America/Los_Angeles": "PT",
-    "America/Anchorage": "AKT",
-    "Pacific/Honolulu": "HT",
-    "UTC": "UTC",
-}
+# NOTE: The previous _TZ_LABELS dict was removed when timezones moved to
+# the supported_timezones DB table (see backend/models.py:SupportedTimezone).
+# The route handler now looks up the short label by iana_name and passes
+# it into _format_window as the `short_label` parameter. Keeping email_service
+# free of DB dependency keeps the module testable in isolation.
 
 
-def _format_window(valid_from: datetime, valid_until: datetime, tz_name: str) -> str:
+def _format_window(
+    valid_from: datetime,
+    valid_until: datetime,
+    tz_name: str,
+    short_label: str | None = None,
+) -> str:
     """
     Render the [valid_from, valid_until] window as a human-readable string in
     the given IANA timezone. Example output:
@@ -411,23 +418,50 @@ def _format_window(valid_from: datetime, valid_until: datetime, tz_name: str) ->
     explicitly before astimezone() because Python 3.12+ deprecates implicit
     UTC assumption on naive datetimes.
 
-    If tz_name isn't a valid IANA zone (shouldn't happen — schemas.py has
-    an allowlist — but defense in depth), fall back to UTC so the email
-    still goes out instead of raising mid-send and losing the message.
+    `short_label` is the friendly abbreviation to show in parentheses (e.g.
+    "IST", "PT"). It's looked up by the caller from the supported_timezones
+    table. If None, falls back to the IANA name — ugly but accurate, and
+    surfaces the missing-label problem in the email so it's obvious at
+    review time rather than silently using a wrong label.
+
+    Failure modes (both safe — email still goes out, never raises):
+      1. tz_name isn't a valid IANA zone — fall back to UTC display.
+      2. The IANA database isn't installed at all (e.g. Windows without the
+         `tzdata` pip package) — fall back to formatting the naive UTC
+         values directly, with a "(UTC)" label. Loud warning is logged so
+         the operator knows to `pip install tzdata`.
     """
+    target_tz = None
+    label = short_label if short_label else tz_name
     try:
         target_tz = ZoneInfo(tz_name)
-        label = _TZ_LABELS.get(tz_name, tz_name)
     except ZoneInfoNotFoundError:
-        # Bad zone name. Log loudly, don't crash the send.
-        print(f"[smtp] WARN: unknown timezone {tz_name!r}, falling back to UTC.")
-        target_tz = ZoneInfo("UTC")
-        label = "UTC"
+        # Either the zone name is wrong, OR (on Windows) the tzdata package
+        # is missing. Try plain UTC as a fallback — if THAT also fails, we
+        # know the IANA DB itself is unavailable and we have to skip the
+        # conversion entirely.
+        print(
+            f"[smtp] WARN: timezone {tz_name!r} unavailable. "
+            f"On Windows install the IANA DB with: pip install tzdata"
+        )
+        try:
+            target_tz = ZoneInfo("UTC")
+            label = "UTC"
+        except ZoneInfoNotFoundError:
+            target_tz = None  # No tzdata at all — render UTC naively below.
+            label = "UTC"
 
-    # Attach UTC, then convert. .replace(tzinfo=...) on a naive dt does NOT
-    # convert — it just labels. astimezone() is what shifts the wall clock.
-    from_local = valid_from.replace(tzinfo=timezone.utc).astimezone(target_tz)
-    until_local = valid_until.replace(tzinfo=timezone.utc).astimezone(target_tz)
+    if target_tz is not None:
+        # Attach UTC, then convert. .replace(tzinfo=...) on a naive dt does
+        # NOT convert — it just labels. astimezone() is what shifts the wall
+        # clock to the target zone.
+        from_local = valid_from.replace(tzinfo=timezone.utc).astimezone(target_tz)
+        until_local = valid_until.replace(tzinfo=timezone.utc).astimezone(target_tz)
+    else:
+        # Last-ditch fallback: no IANA DB installed. The DB stores naive UTC,
+        # so just format the values as-is and call them UTC.
+        from_local = valid_from
+        until_local = valid_until
 
     date_str = from_local.strftime("%B %d, %Y")
     from_time = from_local.strftime("%I:%M %p").lstrip("0")
@@ -488,6 +522,7 @@ def _build_invitation_message(
     hr_name: str | None,
     regenerated: bool = False,
     display_timezone: str | None = None,
+    timezone_short_label: str | None = None,
     include_reading: bool = True,
     include_writing: bool = True,
     include_speaking: bool = True,
@@ -500,6 +535,10 @@ def _build_invitation_message(
     valid_from / valid_until are optional for backward compatibility with the
     regenerate-code path which doesn't (yet) thread the window through. When
     provided, the email shows a "Scheduled for: <window>" line near the top.
+
+    `timezone_short_label` is the friendly abbreviation ("IST", "PT") from
+    the supported_timezones table. The route handler looks it up. If not
+    provided, the email falls back to showing the raw IANA name.
     """
     if regenerated:
         subject = "Action required: Your English Proficiency Test access code has been reset"
@@ -513,7 +552,12 @@ def _build_invitation_message(
         # display timezone before formatting. Falls back to "UTC" if the
         # caller didn't pass a timezone — preserves the old behavior for
         # any caller that hasn't been updated yet.
-        window_str = _format_window(valid_from, valid_until, display_timezone or "UTC")
+        window_str = _format_window(
+            valid_from,
+            valid_until,
+            display_timezone or "UTC",
+            short_label=timezone_short_label,
+        )
     else:
         window_str = ""
 
