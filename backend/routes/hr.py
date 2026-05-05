@@ -21,6 +21,7 @@ from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingRe
 from schemas import (
     HRLoginRequest,
     HRLoginResponse,
+    ChangePasswordRequest,
     InviteCreateRequest,
     InviteCreateResponse,
     InvitationDetails,
@@ -29,7 +30,13 @@ from schemas import (
     ScoreDetail,
     AudioRecordingPublic,
 )
-from auth import verify_password, generate_token, generate_access_code, require_hr
+from auth import (
+    hash_password,
+    verify_password,
+    generate_token,
+    generate_access_code,
+    require_hr,
+)
 from email_service import send_invitation_email, send_regenerated_code_email
 
 
@@ -165,6 +172,38 @@ def logout(request: Request):
 def me(hr: HRAdmin = Depends(require_hr)):
     """Returns the currently logged-in HR. Frontend uses this to confirm session is alive."""
     return HRLoginResponse(id=hr.id, name=hr.name, email=hr.email)
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    hr: HRAdmin = Depends(require_hr),
+    db: Session = Depends(get_db),
+):
+    """
+    Change the logged-in HR's password. Requires the CURRENT password
+    even though we already have a valid session — same defense Gmail and
+    GitHub use, mitigates session-hijack-then-takeover and drive-by
+    changes (someone walking up to an unattended browser).
+
+    Same generic 401 message as login on a wrong current_password (no
+    role-leak via distinct error text). Pydantic enforces the new-
+    password length floor (≥6 chars); a finer-grained policy can be
+    added in a future feature.
+
+    Session is preserved on success — the HR keeps working without a
+    forced re-login. The session cookie is signed with SESSION_SECRET,
+    not derived from the password, so no cookie rotation is needed.
+    """
+    if not verify_password(payload.current_password, hr.password_hash):
+        raise HTTPException(
+            status_code=401,
+            detail="Current password is incorrect.",
+        )
+
+    hr.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"status": "password_changed"}
 
 @router.get("/session-status")
 def session_status(request: Request, db: Session = Depends(get_db)):

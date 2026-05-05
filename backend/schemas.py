@@ -24,6 +24,15 @@ class HRLoginResponse(BaseModel):
     email: EmailStr
 
 
+class ChangePasswordRequest(BaseModel):
+    """POST /api/hr/change-password. The HR's session cookie identifies
+    them; current_password is required to defend against session-hijack
+    + drive-by changes (the same defense Gmail/GitHub use). new_password
+    has the same min-length floor as create_hr.py CLI for consistency."""
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
 # ============================================================
 # Admin portal — auth + HR management
 # See docs/superpowers/specs/2026-05-04-admin-portal-design.md.
