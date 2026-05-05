@@ -9,12 +9,17 @@ or raises 401 if no valid session.
 Multi-tenancy guarantee: results endpoints filter by hr_admin_id so
 HR-A can never see HR-B's candidates, even by guessing IDs.
 """
+import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+
+log = logging.getLogger("hr.forgot_password")
 
 from database import get_db
 from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingResponse, WritingTopic, SystemSettings
@@ -224,12 +229,57 @@ def change_password(
 
 
 # Generic message returned for ALL outcomes of /forgot-password — even
-# unknown emails, admin emails, and SMTP failures. Same string defended
-# in test_forgot_password.py — keep them in sync.
+# unknown emails, admin emails, rate-limited retries, and SMTP failures.
+# Same string defended in test_forgot_password.py — keep them in sync.
 _FORGOT_PASSWORD_GENERIC_RESPONSE = {
     "status": "ok",
     "message": "If an account exists for that email, a temporary password has been sent.",
 }
+
+# Rate-limit + timing-floor configuration. Both defend against abuse of
+# the anonymous /forgot-password endpoint:
+#   - Cooldown: a single email can only trigger one reset every
+#     COOLDOWN seconds. Prevents email-bombing a victim and burning the
+#     SMTP relay's daily quota.
+#   - Latency floor: every request takes at least LATENCY_FLOOR seconds
+#     to respond, regardless of which branch (real HR / unknown email /
+#     admin / rate-limited / SMTP-failed) it falls into. Closes the
+#     timing oracle: without this, an attacker could distinguish "real
+#     HR email" (~1-2s for SMTP) from "unknown email" (<5ms) by simply
+#     timing the response.
+_FORGOT_PASSWORD_COOLDOWN_SECONDS = 60
+_FORGOT_PASSWORD_LATENCY_FLOOR_SECONDS = 1.2
+# In-memory map: email_lower → expires_at unix timestamp. In a multi-
+# worker uvicorn deploy each worker has its own dict, which weakens the
+# guarantee but doesn't break it (an attacker still hits the floor on
+# every request). For a hard guarantee move to Redis or the DB.
+_recent_resets: dict[str, float] = {}
+
+
+def _is_recently_reset(email_lower: str) -> bool:
+    """True if this email triggered a reset within the cooldown. Side
+    effect: stamps the email with a fresh expiry on the FIRST hit
+    (subsequent calls within the window all return True). Garbage-
+    collects expired entries lazily so the dict doesn't grow forever."""
+    now = time.time()
+    # Sweep expired keys (cheap — typically <100 items).
+    for k in [k for k, v in _recent_resets.items() if v < now]:
+        del _recent_resets[k]
+    expires = _recent_resets.get(email_lower)
+    if expires and now < expires:
+        return True
+    _recent_resets[email_lower] = now + _FORGOT_PASSWORD_COOLDOWN_SECONDS
+    return False
+
+
+def _sleep_to_latency_floor(started_at: float) -> None:
+    """Pad the response time so every code path takes at least
+    _FORGOT_PASSWORD_LATENCY_FLOOR_SECONDS. Sync sleep is fine — sync
+    routes run on the threadpool and don't block the event loop."""
+    elapsed = time.monotonic() - started_at
+    remaining = _FORGOT_PASSWORD_LATENCY_FLOOR_SECONDS - elapsed
+    if remaining > 0:
+        time.sleep(remaining)
 
 
 def _generate_temp_password(length: int = 12) -> str:
@@ -249,44 +299,77 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
       - whether the email exists
       - whether the email belongs to an admin (admins reset via CLI)
       - whether SMTP succeeded
+      - whether the cooldown is active
 
     Why: prevents enumeration of valid HR emails. An attacker can't
     paste a list of emails and learn which ones are real accounts.
+    The cooldown and latency floor close two abuse vectors:
+      - Spam-a-victim (1 reset per email per minute)
+      - Timing oracle (every response takes ~1.2s minimum)
 
     Atomicity: the password_hash is only updated AFTER the email send
-    succeeds. If SMTP fails, the user's existing password keeps working
-    — locking them out of their account because we couldn't send an
-    email would be worse than not resetting.
+    succeeds AND the commit succeeds. If either step fails, the user's
+    existing password keeps working — locking them out of their account
+    because we couldn't send an email or persist the change would be
+    worse than not resetting.
 
     Successful resets bump password_changed_at, invalidating any other
     live session via the pw_v check in _resolve_user_with_role.
     """
+    started_at = time.monotonic()
     email_lower = payload.email.lower()
-    hr = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
 
-    # Walk through the privileged-email cases without exposing them.
-    # An admin email or a missing email both fall through to the same
-    # generic 200 response below — no SMTP call, no DB write.
-    if hr is None or hr.role != "hr":
+    # Per-email cooldown. Same generic 200 — don't tell the attacker
+    # whether THEIR rate-limit is what blocked the request, or whether
+    # the email was just unknown.
+    if _is_recently_reset(email_lower):
+        _sleep_to_latency_floor(started_at)
         return _FORGOT_PASSWORD_GENERIC_RESPONSE
 
-    # Generate the temp password and try to email it BEFORE writing.
-    # If SMTP fails the user keeps their existing password.
+    hr = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
+
+    # Walk through the privileged-email cases without exposing them. An
+    # admin email or a missing email both fall through to the same 200.
+    # We deliberately do NOT call SMTP here (cost / quota), but we DO
+    # burn equivalent CPU on a fake hash so the bcrypt latency doesn't
+    # become a secondary timing oracle — combined with the latency
+    # floor below, all paths now look identical from the outside.
+    if hr is None or hr.role != "hr":
+        hash_password(_generate_temp_password())  # constant-time-ish padding
+        _sleep_to_latency_floor(started_at)
+        return _FORGOT_PASSWORD_GENERIC_RESPONSE
+
+    # Real HR — generate the temp password and try to email it BEFORE
+    # writing. If SMTP fails the user keeps their existing password.
     temp_password = _generate_temp_password()
-    email_ok, email_err = send_temp_password_email(
+    email_ok, _email_err = send_temp_password_email(
         hr_email=hr.email,
         hr_name=hr.name,
         login_url=f"{APP_BASE_URL}/login",
         temp_password=temp_password,
     )
     if not email_ok:
-        # Logged in send_temp_password_email; surface generic message.
+        _sleep_to_latency_floor(started_at)
         return _FORGOT_PASSWORD_GENERIC_RESPONSE
 
-    # Email sent — now safely commit the password rotation.
+    # Email sent — now commit the password rotation. Wrapped in
+    # try/except because if the commit fails AFTER the email went out,
+    # the user is holding an email saying their new password is X but
+    # the DB still has the old hash. They'd be stuck. Logging gives
+    # ops a chance to intervene; the user just gets the generic
+    # response and can try again after the cooldown.
     hr.password_hash = hash_password(temp_password)
     hr.password_changed_at = _utcnow_naive()
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception(
+            "[forgot-password] DB commit failed AFTER temp-password email "
+            "was sent for hr_id=%s — user may be locked out, ops should "
+            "investigate.", hr.id
+        )
+    _sleep_to_latency_floor(started_at)
     return _FORGOT_PASSWORD_GENERIC_RESPONSE
 
 

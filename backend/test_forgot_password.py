@@ -211,6 +211,86 @@ def test_forgot_password_invalid_email_format_rejected():
 # Session invalidation — cross-tab story
 # ----------------------------------------------------------------------
 
+def test_forgot_password_cooldown_blocks_rapid_retry():
+    """Per-email cooldown: a second reset for the same email within
+    _FORGOT_PASSWORD_COOLDOWN_SECONDS must NOT trigger SMTP. Returns
+    the same generic 200 (don't tell the attacker the rate-limit hit).
+    """
+    # Reset the in-memory cooldown so prior tests don't pollute.
+    from routes.hr import _recent_resets
+    _recent_resets.clear()
+
+    hr = _make_hr(password="originalPass1")
+    sent = []
+
+    def fake_send(**kwargs):
+        sent.append(kwargs)
+        return (True, None)
+
+    try:
+        with patch("routes.hr.send_temp_password_email", side_effect=fake_send):
+            c = TestClient(app)
+
+            # First call — real send + DB rotation.
+            r1 = c.post("/api/hr/forgot-password", json={"email": hr.email})
+            assert r1.status_code == 200
+            assert r1.json()["message"] == _GENERIC_MESSAGE
+            assert len(sent) == 1, "first call should trigger SMTP"
+
+            # Second call within the cooldown — same generic 200, NO new
+            # SMTP send. Hash also unchanged since first call.
+            hash_after_first = _hash_for(hr.id)
+            r2 = c.post("/api/hr/forgot-password", json={"email": hr.email})
+            assert r2.status_code == 200
+            assert r2.json()["message"] == _GENERIC_MESSAGE
+            assert len(sent) == 1, "second call within cooldown must NOT trigger SMTP"
+            assert _hash_for(hr.id) == hash_after_first, "hash must not change on cooldown'd retry"
+    finally:
+        _drop(hr.id)
+        _recent_resets.clear()
+
+
+def test_forgot_password_db_commit_failure_does_not_lock_user_out():
+    """If the DB commit fails AFTER the SMTP send succeeds, log loudly
+    and return generic 200 — but the user's existing password must
+    still work (no lockout). Without try/except the route would 500
+    AND the rollback would leave the row inconsistent."""
+    from routes.hr import _recent_resets
+    _recent_resets.clear()
+
+    hr = _make_hr(password="originalPass1")
+    original_hash = _hash_for(hr.id)
+
+    def fake_send(**kwargs):
+        return (True, None)
+
+    # Patch SQLAlchemy session.commit to raise on the rotation. Other
+    # commits in the request lifecycle aren't relevant here — the
+    # rotate path's commit is the only one that runs.
+    from sqlalchemy.exc import OperationalError
+    real_commit = SessionLocal.kw["bind"]  # not used; we patch via the dependency
+
+    def fail_commit(self):
+        raise OperationalError("simulated", {}, Exception("simulated DB lock"))
+
+    try:
+        from sqlalchemy.orm import Session as SqlASession
+        with patch("routes.hr.send_temp_password_email", side_effect=fake_send), \
+             patch.object(SqlASession, "commit", new=fail_commit):
+            c = TestClient(app)
+            r = c.post("/api/hr/forgot-password", json={"email": hr.email})
+            assert r.status_code == 200, r.text
+            assert r.json()["message"] == _GENERIC_MESSAGE
+
+        # Critical: the original hash must still be in place — the user
+        # can still log in with their original password despite the
+        # commit failure.
+        assert _hash_for(hr.id) == original_hash
+    finally:
+        _drop(hr.id)
+        _recent_resets.clear()
+
+
 def test_forgot_password_invalidates_existing_sessions():
     """A successful reset bumps password_changed_at, so any session
     that pre-dates the reset is invalidated by the pw_v check in
