@@ -101,20 +101,6 @@ class HRCreateByAdminResponse(BaseModel):
 # ============================================================
 # Invitation creation (HR side)
 # ============================================================
-# IANA timezone names accepted from HR. Allowlist (not free-text) so an
-# attacker or buggy frontend can't put garbage in the DB column. Keep this
-# list in sync with the dropdown options in hr-dashboard.html.
-ALLOWED_TIMEZONES = frozenset({
-    "Asia/Kolkata",        # India Standard Time
-    "America/New_York",    # US Eastern
-    "America/Chicago",     # US Central
-    "America/Denver",      # US Mountain
-    "America/Los_Angeles", # US Pacific
-    "America/Anchorage",   # US Alaska
-    "Pacific/Honolulu",    # US Hawaii (no DST)
-})
-
-
 class InviteCreateRequest(BaseModel):
     candidate_name: str = Field(min_length=1, max_length=100)
     candidate_email: EmailStr
@@ -124,9 +110,13 @@ class InviteCreateRequest(BaseModel):
     # Values are sent as ISO-8601 UTC strings from the Angular form.
     valid_from: datetime
     valid_until: datetime
-    # IANA timezone name HR selected. Required (no default) so a forgotten
-    # frontend field fails fast at validation rather than silently saving
-    # the wrong zone. Validated against ALLOWED_TIMEZONES below.
+    # IANA timezone name HR selected. The list of accepted values is now
+    # in the supported_timezones table — validated in the route handler
+    # against active rows. We don't validate here because Pydantic field
+    # validators can't access the DB session, and DB lookup is the source
+    # of truth (allows zones to be added at runtime without a code change).
+    # min/max length still enforced as a basic sanity check against
+    # obviously malformed input.
     timezone: str = Field(min_length=1, max_length=64)
 
     # Per-invitation section selection. HR picks any non-empty subset of the
@@ -137,15 +127,6 @@ class InviteCreateRequest(BaseModel):
     include_writing: bool = True
     include_speaking: bool = True
 
-    @field_validator("timezone")
-    @classmethod
-    def _check_timezone(cls, v: str) -> str:
-        if v not in ALLOWED_TIMEZONES:
-            raise ValueError(
-                f"timezone must be one of {sorted(ALLOWED_TIMEZONES)}. Got: {v!r}"
-            )
-        return v
-
     @model_validator(mode="after")
     def _check_at_least_one_section(self) -> "InviteCreateRequest":
         """A test with zero sections is meaningless. Reject explicitly so HR
@@ -155,6 +136,23 @@ class InviteCreateRequest(BaseModel):
                 "At least one section (reading, writing, or speaking) must be selected."
             )
         return self
+
+
+class SupportedTimezoneOut(BaseModel):
+    """
+    One row of the timezone dropdown, returned from GET /api/hr/timezones.
+
+    The endpoint returns these as a list, sorted by sort_order, filtered
+    to is_active=TRUE rows only. The frontend populates the invite-modal
+    dropdown from the response and sends `iana_name` back as the `timezone`
+    field on the invite create request.
+    """
+    iana_name: str       # "Asia/Kolkata" — what gets stored on Invitation
+    display_label: str   # "India Standard Time (IST)" — what HR sees
+    short_label: str     # "IST" — what the candidate sees in emails
+
+    class Config:
+        from_attributes = True
 
 
 class InviteCreateResponse(BaseModel):

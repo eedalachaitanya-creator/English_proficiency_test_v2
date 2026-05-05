@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 log = logging.getLogger("hr.forgot_password")
 
 from database import get_db
-from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingResponse, WritingTopic, SystemSettings
+from models import HRAdmin, Invitation, AudioRecording, SpeakingTopic, WritingResponse, WritingTopic, SystemSettings, SupportedTimezone
 from schemas import (
     HRLoginRequest,
     HRLoginResponse,
@@ -35,6 +35,7 @@ from schemas import (
     ScoreSummary,
     ScoreDetail,
     AudioRecordingPublic,
+    SupportedTimezoneOut,
 )
 from auth import (
     hash_password,
@@ -408,6 +409,95 @@ def session_status(request: Request, db: Session = Depends(get_db)):
 # ------------------------------------------------------------------
 # Invitations
 # ------------------------------------------------------------------
+def _resolve_timezone(db: Session, iana_name: str) -> SupportedTimezone:
+    """
+    Look up a SupportedTimezone row by iana_name. Used both for validation
+    (does this zone exist and is it active?) and for label retrieval (what
+    short_label do I pass to the email render?).
+
+    Raises HTTPException 400 if the zone isn't in the table or is inactive.
+    The error message tells the frontend which zones are valid so it can
+    surface a clear message to HR.
+    """
+    tz = db.query(SupportedTimezone).filter(
+        SupportedTimezone.iana_name == iana_name,
+        SupportedTimezone.is_active == True,  # noqa: E712 — explicit for clarity
+    ).first()
+    if tz is None:
+        # Build the list of valid options for the error message — same query
+        # the GET /timezones endpoint runs, so HR sees exactly what they
+        # could have chosen.
+        active = db.query(SupportedTimezone.iana_name).filter(
+            SupportedTimezone.is_active == True  # noqa: E712
+        ).order_by(SupportedTimezone.sort_order).all()
+        valid = [row[0] for row in active]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or inactive timezone {iana_name!r}. "
+                   f"Active timezones: {valid}",
+        )
+    return tz
+
+
+def _resolve_timezone_for_email(db: Session, iana_name: str) -> tuple[str, str | None]:
+    """
+    Look up the short_label for an iana_name WITHOUT enforcing is_active.
+    Used by the email-send paths (resend, regenerate) where the row was
+    saved at invite-creation time and might since have been soft-deleted.
+    The email still needs to render correctly even if the zone is no longer
+    in the dropdown.
+
+    Returns (iana_name, short_label_or_None). Falls back to None if the row
+    no longer exists at all (e.g. someone hard-deleted it instead of
+    soft-deleting). The email service then renders the IANA name as the
+    label — ugly but functional.
+    """
+    row = db.query(SupportedTimezone).filter(
+        SupportedTimezone.iana_name == iana_name
+    ).first()
+    if row is None:
+        return (iana_name, None)
+    return (iana_name, row.short_label)
+
+
+@router.get("/timezones", response_model=list[SupportedTimezoneOut])
+def list_timezones(
+    hr: HRAdmin = Depends(require_hr),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the active timezone list for the invite-modal dropdown.
+
+    Sorted by sort_order, filtered to is_active=TRUE rows only. Inactive
+    rows are hidden from the dropdown but still resolvable for email
+    rendering of older invitations (see _resolve_timezone_for_email).
+
+    Defense-in-depth: filter out rows whose iana_name isn't a real IANA
+    zone. Bad data shouldn't appear in the dropdown — it would let HR
+    create invitations whose emails crash on render. We log a warning
+    so the operator notices and can fix the row.
+    """
+    rows = db.query(SupportedTimezone).filter(
+        SupportedTimezone.is_active == True  # noqa: E712
+    ).order_by(SupportedTimezone.sort_order).all()
+
+    # Validate each row's iana_name resolves in the IANA database. Drop
+    # bad ones so the frontend never sees them.
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    valid_rows = []
+    for row in rows:
+        try:
+            ZoneInfo(row.iana_name)
+            valid_rows.append(row)
+        except ZoneInfoNotFoundError:
+            print(
+                f"[hr] WARN: supported_timezones row id={row.id} has invalid "
+                f"iana_name {row.iana_name!r} (not in IANA DB). Hiding from "
+                f"dropdown. Fix the row or set is_active=FALSE."
+            )
+    return valid_rows
+
+
 @router.post("/invite", response_model=InviteCreateResponse)
 def create_invite(
     payload: InviteCreateRequest,
@@ -445,6 +535,13 @@ def create_invite(
     valid_from = _to_naive_utc(payload.valid_from)
     expires_at = _to_naive_utc(payload.valid_until)
     access_code = generate_access_code()
+
+    # Validate the timezone against the supported_timezones table. This
+    # replaces the old hardcoded ALLOWED_TIMEZONES allowlist in schemas.py.
+    # Raises 400 if the zone isn't in the table or is inactive. Returns the
+    # row so we can use its short_label for the email (avoids a second
+    # query later in this same handler).
+    tz_row = _resolve_timezone(db, payload.timezone)
 
     # Snapshot the operational settings onto this invitation. Future setting
     # changes won't affect this row — see spec for the rationale.
@@ -494,6 +591,7 @@ def create_invite(
         valid_until=inv.expires_at,
         hr_name=hr.name,
         display_timezone=inv.display_timezone,
+        timezone_short_label=tz_row.short_label,
         include_reading=inv.include_reading,
         include_writing=inv.include_writing,
         include_speaking=inv.include_speaking,
@@ -567,6 +665,12 @@ def regenerate_code(
 
     exam_url = f"{APP_BASE_URL}/exam/{inv.token}"
 
+    # Look up the short label for the email render. We use the soft-resolve
+    # helper (no is_active enforcement) because the timezone might have been
+    # deactivated since this invitation was created — the email should still
+    # render correctly using the original zone label.
+    _, tz_short_label = _resolve_timezone_for_email(db, inv.display_timezone)
+
     # Notify the candidate via email that their access code was reset. Same
     # best-effort policy: regen is recorded in the DB regardless of SMTP outcome.
     email_ok, email_err = send_regenerated_code_email(
@@ -578,6 +682,7 @@ def regenerate_code(
         valid_until=inv.expires_at,
         hr_name=hr.name,
         display_timezone=inv.display_timezone,
+        timezone_short_label=tz_short_label,
         include_reading=inv.include_reading,
         include_writing=inv.include_writing,
         include_speaking=inv.include_speaking,
@@ -691,6 +796,10 @@ def resend_invitation_email(
         )
 
     exam_url = f"{APP_BASE_URL}/exam/{inv.token}"
+
+    # Look up short label for email render (soft-resolve — see regenerate_code).
+    _, tz_short_label = _resolve_timezone_for_email(db, inv.display_timezone)
+
     email_ok, email_err = send_invitation_email(
         candidate_email=inv.candidate_email,
         candidate_name=inv.candidate_name,
@@ -700,6 +809,7 @@ def resend_invitation_email(
         valid_until=inv.expires_at,
         hr_name=hr.name,
         display_timezone=inv.display_timezone,
+        timezone_short_label=tz_short_label,
         include_reading=inv.include_reading,
         include_writing=inv.include_writing,
         include_speaking=inv.include_speaking,

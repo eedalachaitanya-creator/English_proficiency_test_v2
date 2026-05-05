@@ -349,3 +349,54 @@ class SystemSettings(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="system_settings_singleton"),
     )
+
+# ------------------------------------------------------------------
+# Supported timezones — runtime-editable list of zones HR can pick
+# from when creating an invitation.
+# ------------------------------------------------------------------
+class SupportedTimezone(Base):
+    """
+    The list of timezones available in the HR invitation form's dropdown.
+    Replaces the old hardcoded ALLOWED_TIMEZONES (schemas.py) and
+    _TZ_LABELS (email_service.py).
+
+    Adding/removing zones is a SQL operation — no code change needed:
+
+        INSERT INTO supported_timezones
+            (iana_name, display_label, short_label, sort_order, is_active)
+        VALUES
+            ('America/Phoenix', 'US Arizona Time (MST)', 'MST', 65, TRUE);
+
+        UPDATE supported_timezones
+        SET is_active = FALSE
+        WHERE iana_name = 'America/Anchorage';
+
+    NEVER DELETE rows that have been used by an invitation. Soft-delete
+    via is_active=FALSE so old invitations referencing the iana_name via
+    Invitation.display_timezone still render emails correctly.
+
+    The relationship between this table and Invitation.display_timezone is
+    by name only — there is NO foreign key. That's deliberate so the
+    column accepts legacy values like 'UTC' (rows created before this
+    feature existed) and so soft-deleting a zone doesn't cascade.
+    """
+    __tablename__ = "supported_timezones"
+
+    id = Column(Integer, primary_key=True)
+    # IANA timezone name — must match an entry in the IANA database
+    # (e.g. "Asia/Kolkata"). Validated at the API layer when creating
+    # invitations; not enforced at the DB level so we accept legacy
+    # values for backward compatibility.
+    iana_name = Column(String(64), unique=True, nullable=False)
+    # Friendly label HR sees in the dropdown ("India Standard Time (IST)").
+    display_label = Column(String(100), nullable=False)
+    # Short label the candidate sees in the email ("IST"). Kept separate
+    # from display_label because emails have less space and a different
+    # tone than UI dropdowns.
+    short_label = Column(String(20), nullable=False)
+    # Lower numbers appear first in the dropdown. Spaced by 10 in seed
+    # data so new zones can slot between existing ones.
+    sort_order = Column(Integer, default=0, nullable=False)
+    # Soft-delete flag. False = hidden from dropdown but still resolvable
+    # for old invitations that already reference this iana_name.
+    is_active = Column(Boolean, default=True, nullable=False)

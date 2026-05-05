@@ -14,12 +14,13 @@ way to re-roll for easier content.
 """
 import random
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Invitation, Passage, Question, SpeakingTopic, WritingTopic
+from models import Invitation, Passage, Question, SpeakingTopic, WritingTopic, SupportedTimezone
 from schemas import (
     TestContent,
     SectionFlags,
@@ -62,6 +63,64 @@ def _can_start(start_count: int, max_starts: int) -> bool:
 
 def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _format_opens_at(db: Session, valid_from: datetime, display_timezone: str) -> str:
+    """
+    Format the "test opens on..." time for the candidate-facing 425 error.
+
+    Renders in the invitation's display_timezone (the same zone HR picked
+    when creating the invitation) and appends the short label like "(IST)"
+    or "(ET)" so the candidate knows which timezone the time is in.
+
+    Why the label matters: a candidate scheduled in ET who clicks the link
+    while traveling — or any third party (HR self-testing from a different
+    zone, someone forwarded the link, etc.) — would otherwise read the
+    bare time as "their" time and get confused. The label is a 4-character
+    anchor that removes that ambiguity.
+
+    The label comes from the supported_timezones table. We don't enforce
+    is_active here — even if HR soft-deleted the zone after creating this
+    invitation, we still want to render the candidate's email-time-equivalent
+    string correctly.
+
+    Failure modes (all safe — never raises, always produces a string):
+      - display_timezone is "UTC" or unknown -> render in UTC with "(UTC)" label
+      - tzdata not installed -> render the naive UTC value with "(UTC)" label
+      - supported_timezones row missing -> use the IANA name as the label
+
+    Returns a string like: "May 5, 2026 at 3:57 PM (IST)"
+    """
+    # Look up the short label from supported_timezones. Falls back to the
+    # IANA name if the row is gone (e.g. someone hard-deleted it instead
+    # of soft-deleting). Ugly but functional — at least the candidate sees
+    # SOME zone identifier.
+    tz_row = db.query(SupportedTimezone).filter(
+        SupportedTimezone.iana_name == display_timezone
+    ).first()
+    label = tz_row.short_label if tz_row else display_timezone
+
+    # Convert UTC -> target zone. Same pattern as email_service._format_window:
+    # explicitly attach UTC tzinfo before astimezone() because Python 3.12+
+    # deprecates implicit UTC assumption on naive datetimes.
+    try:
+        target_tz = ZoneInfo(display_timezone)
+        local = valid_from.replace(tzinfo=timezone.utc).astimezone(target_tz)
+    except ZoneInfoNotFoundError:
+        # Bad zone name OR (on Windows) tzdata not installed. Fall back
+        # to UTC display — both the time AND the label become UTC so they
+        # match. Better than rendering a non-UTC time with a UTC label.
+        print(
+            f"[candidate] WARN: timezone {display_timezone!r} unavailable. "
+            f"Falling back to UTC. On Windows: pip install tzdata"
+        )
+        local = valid_from
+        label = "UTC"
+
+    # Format with .replace(' 0', ' ') to drop the leading zero on the hour
+    # (so "03:57 PM" becomes "3:57 PM"). strftime has no portable flag.
+    formatted = local.strftime("%B %d, %Y at %I:%M %p").replace(" 0", " ")
+    return f"{formatted} ({label})"
 
 
 # ------------------------------------------------------------------
@@ -226,19 +285,17 @@ def verify_code(
     # Early) is the standard HTTP code for "the request is correct but the
     # server isn't ready to accept it yet" — distinct from 410 (gone forever).
     if inv.valid_from > _utcnow_naive():
-        # Format as a human-readable string so the candidate sees something
-        # like "May 5, 2026 at 2:00 PM (UTC)" instead of an ISO timestamp.
-        # The .replace(' 0', ' ') drops any leading zero that follows a
-        # space (e.g. "May 05" → "May 5", " 09:00 AM" → " 9:00 AM") since
-        # strftime has no portable cross-platform flag for this.
-        opens_at = (
-            f"{inv.valid_from.strftime('%B %d, %Y at %I:%M %p').replace(' 0', ' ')} (UTC)"
-        )
+        # Render the open time in the invitation's display_timezone (same
+        # zone the candidate saw in their invitation email), so they don't
+        # have to do timezone math at the moment they're trying to start
+        # the test. Falls back to UTC if the zone or its label isn't
+        # available — the message is still informative either way.
+        opens_at = _format_opens_at(db, inv.valid_from, inv.display_timezone)
         raise HTTPException(
             status_code=425,
             detail=(
-                f"This test isn't open yet. It opens on {opens_at}. "
-                f"Please come back at the scheduled time."
+                f"Your test hasn't started yet. It opens on {opens_at}. "
+                f"Please return at the scheduled time."
             ),
         )
 
