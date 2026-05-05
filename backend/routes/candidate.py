@@ -305,15 +305,21 @@ def verify_code(
     # max_starts. started_at records ONLY the first start (preserved for HR
     # display).
     #
-    # TODO: this read-modify-write of start_count is not race-safe. Two
-    # browser tabs racing the access-code POST can both pass _can_start()
-    # and both increment, consuming up to 2× the budget on the same click.
-    # Acceptable for the current trusted-HR / max_starts=1-by-default
-    # environment per the spec
+    # TODO: this whole verify_code path is not race-safe. Two browser tabs
+    # racing the access-code POST can both pass _can_start() AND both call
+    # _assign_content() (which re-randomizes passage_id /
+    # assigned_question_ids / assigned_writing_topic_id /
+    # assigned_topic_ids — overwriting whatever the first call assigned).
+    # Net effect: start_count consumes 2× budget on a single click AND
+    # the two tabs may each have set sessions pointing at the same row
+    # while the row's content was rewritten between them. Acceptable for
+    # the current trusted-HR / max_starts=1-by-default environment per
+    # the spec
     # (docs/superpowers/specs/2026-05-04-system-settings-runtime-config-design.md).
-    # If max_starts > 1 ever becomes the norm, switch to a SELECT ... FOR
-    # UPDATE on the invitation row above, or move the counter into a
-    # database-level UPDATE ... RETURNING that's atomic.
+    # The right fix is a single SELECT ... FOR UPDATE on the invitation
+    # row at the top of this handler, gating BOTH _assign_content and
+    # the start_count increment. Or move the entire transition into a
+    # database-level atomic UPDATE ... RETURNING.
     inv.start_count = (inv.start_count or 0) + 1
     if inv.started_at is None:
         inv.started_at = _utcnow_naive()

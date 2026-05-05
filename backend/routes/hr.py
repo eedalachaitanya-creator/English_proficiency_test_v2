@@ -158,6 +158,9 @@ def login(payload: HRLoginRequest, request: Request, db: Session = Depends(get_d
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     request.session["hr_admin_id"] = hr.id
+    # Pin the session to the current password_changed_at so a future
+    # rotation invalidates this session via _resolve_user_with_role.
+    request.session["pw_v"] = hr.password_changed_at.isoformat()
     return HRLoginResponse(id=hr.id, name=hr.name, email=hr.email)
 
 
@@ -177,6 +180,7 @@ def me(hr: HRAdmin = Depends(require_hr)):
 @router.post("/change-password")
 def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     hr: HRAdmin = Depends(require_hr),
     db: Session = Depends(get_db),
 ):
@@ -202,7 +206,13 @@ def change_password(
         )
 
     hr.password_hash = hash_password(payload.new_password)
+    hr.password_changed_at = _utcnow_naive()
     db.commit()
+    db.refresh(hr)
+    # Re-pin the active session to the new password_changed_at — without
+    # this update, the session cookie's stored pw_v would now be stale
+    # against the user's row and the next request would 401.
+    request.session["pw_v"] = hr.password_changed_at.isoformat()
     return {"status": "password_changed"}
 
 @router.get("/session-status")

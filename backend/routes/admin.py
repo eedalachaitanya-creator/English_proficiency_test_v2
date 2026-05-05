@@ -60,6 +60,9 @@ def login(payload: AdminLoginRequest, request: Request, db: Session = Depends(ge
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     request.session["hr_admin_id"] = user.id
+    # Pin the session to the admin's current password_changed_at — same
+    # pattern as HR login, enables session invalidation on rotation.
+    request.session["pw_v"] = user.password_changed_at.isoformat()
     return AdminLoginResponse(
         id=user.id, name=user.name, email=user.email, role=user.role
     )
@@ -84,6 +87,7 @@ def me(admin: HRAdmin = Depends(require_admin)):
 @router.post("/change-password")
 def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     admin: HRAdmin = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -95,7 +99,12 @@ def change_password(
     Admins start with a CLI-set password (create_admin.py); rotating it
     in-product avoids the "first admin gets stuck with whatever the
     deploy script gave them" trap.
+
+    Bumps password_changed_at to invalidate any other live admin
+    sessions for this account, then re-pins the current request's
+    session so the active tab keeps working.
     """
+    from datetime import datetime, timezone
     if not verify_password(payload.current_password, admin.password_hash):
         raise HTTPException(
             status_code=401,
@@ -103,7 +112,10 @@ def change_password(
         )
 
     admin.password_hash = hash_password(payload.new_password)
+    admin.password_changed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
+    db.refresh(admin)
+    request.session["pw_v"] = admin.password_changed_at.isoformat()
     return {"status": "password_changed"}
 
 

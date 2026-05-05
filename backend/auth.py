@@ -66,11 +66,21 @@ def _resolve_user_with_role(
     one place. Always raises 401 on any failure (no role-leak via
     distinct error messages — admins and HRs both get the same generic
     "not authenticated" response if they try to use the wrong endpoint).
+
+    Also enforces session invalidation on password rotation: each session
+    cookie carries `pw_v` (the user's password_changed_at timestamp at
+    login). If the user's current password_changed_at is newer, the
+    session was issued before a password change and is rejected. This
+    is what makes the change-password endpoint actually defend against
+    an active session-hijack — without this check, an attacker who
+    captured the cookie keeps working until the cookie's natural expiry.
     """
-    # All three failure modes (no cookie / deleted user / wrong role)
-    # return the SAME generic 401 message. Different messages would let
-    # an attacker distinguish "this user_id was once valid but is now
-    # deleted" from "no cookie at all" by crafting session cookies.
+    # All four failure modes (no cookie / deleted user / wrong role /
+    # stale-after-password-change) return the SAME generic 401 message.
+    # Different messages would let an attacker distinguish "this user_id
+    # was once valid but is now deleted" from "no cookie at all" by
+    # crafting session cookies, or distinguish "your password was just
+    # rotated" from "you never logged in" by replaying old cookies.
     GENERIC_401 = "Not authenticated. Please log in."
 
     hr_id = request.session.get("hr_admin_id")
@@ -90,6 +100,23 @@ def _resolve_user_with_role(
         )
 
     if hr.role != expected_role:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=GENERIC_401,
+        )
+
+    # Session-invalidation gate. session_pw_v is the password_changed_at
+    # value at login (as ISO-8601 string — DateTime isn't JSON-serializable
+    # for the session cookie). If the user's current password_changed_at
+    # is strictly newer, the session pre-dates a password rotation and
+    # MUST be invalidated.
+    session_pw_v = request.session.get("pw_v")
+    current_pw_v = hr.password_changed_at.isoformat() if hr.password_changed_at else None
+    if session_pw_v != current_pw_v:
+        # Don't clear: the cookie itself is still cryptographically valid,
+        # but its embedded timestamp is stale. Forcing the user to re-log
+        # in is the whole point.
+        request.session.clear()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=GENERIC_401,

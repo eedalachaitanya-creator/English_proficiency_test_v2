@@ -82,11 +82,34 @@ def _stub_request(session_dict: dict):
 # ----------------------------------------------------------------------
 
 def test_require_admin_accepts_admin(admin_user, db_session):
-    """Happy path: session has an admin id, dependency returns the admin row."""
-    request = _stub_request({"hr_admin_id": admin_user.id})
+    """Happy path: session has an admin id + matching pw_v, dependency
+    returns the admin row."""
+    request = _stub_request({
+        "hr_admin_id": admin_user.id,
+        "pw_v": admin_user.password_changed_at.isoformat(),
+    })
     result = require_admin(request, db_session)
     assert result.id == admin_user.id
     assert result.role == "admin"
+
+
+def test_require_admin_rejects_stale_pw_v(admin_user, db_session):
+    """Session has a pw_v older than the user's current password_changed_at
+    (the user rotated their password from another tab) → 401, session
+    cleared. This is the whole point of the pw_v field."""
+    # Bump the user's password_changed_at; pretend the session was issued
+    # before this rotation.
+    admin_user.password_changed_at = admin_user.password_changed_at.replace(year=2025)
+    db_session.commit()
+    db_session.refresh(admin_user)
+    request = _stub_request({
+        "hr_admin_id": admin_user.id,
+        # Stale: claims an older pw_v than the user has now.
+        "pw_v": "2024-01-01T00:00:00",
+    })
+    with pytest.raises(HTTPException) as exc:
+        require_admin(request, db_session)
+    assert exc.value.status_code == 401
 
 
 def test_require_admin_rejects_no_session(db_session):
@@ -119,7 +142,10 @@ def test_require_admin_rejects_deleted_user(db_session):
 
 def test_require_hr_still_accepts_hr(hr_user, db_session):
     """Regression: the existing happy path still works for HR users."""
-    request = _stub_request({"hr_admin_id": hr_user.id})
+    request = _stub_request({
+        "hr_admin_id": hr_user.id,
+        "pw_v": hr_user.password_changed_at.isoformat(),
+    })
     result = require_hr(request, db_session)
     assert result.id == hr_user.id
     assert result.role == "hr"

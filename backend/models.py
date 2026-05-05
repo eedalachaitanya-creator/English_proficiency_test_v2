@@ -52,6 +52,10 @@ class HRAdmin(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(10), default="hr", nullable=False)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+    # Bumped on password rotation (login + change-password). Used to
+    # invalidate other sessions for the same user — see auth.py
+    # _resolve_user_with_role and routes/hr.py change_password.
+    password_changed_at = Column(DateTime, default=_utcnow, nullable=False)
 
     # Each HR has many invitations they've sent. Admins won't have any.
     invitations = relationship("Invitation", back_populates="hr", cascade="all, delete-orphan")

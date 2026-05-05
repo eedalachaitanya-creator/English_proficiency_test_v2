@@ -37,9 +37,18 @@ def upgrade() -> None:
         sa.Column("speaking_seconds", sa.Integer(), nullable=False, server_default="600"),
         sa.CheckConstraint("id = 1", name="system_settings_singleton"),
     )
-    op.execute(
-        "INSERT INTO system_settings (id) VALUES (1) ON CONFLICT DO NOTHING"
-    )
+    # Seed the singleton row. Dialect-branch the upsert because the
+    # original `ON CONFLICT DO NOTHING` is Postgres-only and silently
+    # broke `alembic upgrade head` on the default SQLite dev DB.
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        op.execute(
+            "INSERT OR IGNORE INTO system_settings (id) VALUES (1)"
+        )
+    else:
+        op.execute(
+            "INSERT INTO system_settings (id) VALUES (1) ON CONFLICT DO NOTHING"
+        )
 
     op.add_column(
         "invitations",
