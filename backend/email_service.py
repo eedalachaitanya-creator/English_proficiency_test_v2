@@ -222,6 +222,88 @@ def send_regenerated_code_email(
         return (False, err)
 
 
+def send_temp_password_email(
+    *,
+    hr_email: str,
+    hr_name: str,
+    login_url: str,
+    temp_password: str,
+) -> tuple[bool, str | None]:
+    """
+    Send the HR a freshly-generated temporary password after they used
+    the "Forgot password?" flow. Same (success, error) contract as the
+    other email helpers — never raises. Returns (False, reason) so the
+    caller can decide whether to commit the password change atomically
+    (we don't want to update password_hash if the email never went out,
+    or the user is locked out of their account).
+
+    The temp password is plaintext in this email — same trade-off as
+    send_hr_welcome_email. The email subject and body strongly prompt
+    the recipient to change the password immediately after logging in.
+    """
+    if not _SMTP_CONFIGURED:
+        err = "SMTP not configured (missing env vars)"
+        print(f"[smtp] SKIPPED: {err}.")
+        return (False, err)
+
+    msg = EmailMessage()
+    msg["Subject"] = "Your English Proficiency Test password has been reset"
+    msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_FROM_EMAIL))
+    msg["To"] = hr_email
+    msg["Reply-To"] = SMTP_FROM_EMAIL
+
+    msg.set_content(
+        f"Dear {hr_name},\n"
+        f"\n"
+        f"You (or someone using your email) requested a password reset for\n"
+        f"your English Proficiency Test HR account. Your new temporary\n"
+        f"password is below.\n"
+        f"\n"
+        f"--------------------------------------------\n"
+        f"YOUR NEW TEMPORARY PASSWORD\n"
+        f"--------------------------------------------\n"
+        f"\n"
+        f"  Login URL: {login_url}\n"
+        f"  Email:     {hr_email}\n"
+        f"  Password:  {temp_password}\n"
+        f"\n"
+        f"--------------------------------------------\n"
+        f"IMPORTANT — change this password immediately\n"
+        f"--------------------------------------------\n"
+        f"\n"
+        f"After you log in, click your account avatar in the top-right and\n"
+        f"choose 'Change password' to set a new password you'll remember.\n"
+        f"\n"
+        f"If you did NOT request this reset, your account may have been\n"
+        f"targeted. Reply to this email so we can investigate. Your old\n"
+        f"password no longer works — anyone with this email can log in,\n"
+        f"so treat the contents as sensitive.\n"
+        f"\n"
+        f"Best regards,\n"
+        f"Stixis HR Team\n"
+        f"\n"
+        f"---\n"
+        f"This is an automated email. Do not forward your password to anyone."
+    )
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            context = ssl.create_default_context(cafile=certifi.where())
+            server.starttls(context=context)
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+        print(f"[smtp] sent forgot-password email to {hr_email}")
+        return (True, None)
+    except smtplib.SMTPAuthenticationError as e:
+        err = "SMTP authentication failed (check app password)"
+        print(f"[smtp] AUTH FAILED for {SMTP_USER}: {e}")
+        return (False, err)
+    except (smtplib.SMTPException, OSError, TimeoutError) as e:
+        err = f"{type(e).__name__}: {str(e)[:150]}"
+        print(f"[smtp] FAILED to send forgot-password to {hr_email}: {err}")
+        return (False, err)
+
+
 def send_hr_welcome_email(
     *,
     hr_email: str,

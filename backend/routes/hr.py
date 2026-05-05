@@ -22,6 +22,7 @@ from schemas import (
     HRLoginRequest,
     HRLoginResponse,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
     InviteCreateRequest,
     InviteCreateResponse,
     InvitationDetails,
@@ -37,7 +38,13 @@ from auth import (
     generate_access_code,
     require_hr,
 )
-from email_service import send_invitation_email, send_regenerated_code_email
+from email_service import (
+    send_invitation_email,
+    send_regenerated_code_email,
+    send_temp_password_email,
+)
+import secrets
+import string
 
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
@@ -214,6 +221,74 @@ def change_password(
     # against the user's row and the next request would 401.
     request.session["pw_v"] = hr.password_changed_at.isoformat()
     return {"status": "password_changed"}
+
+
+# Generic message returned for ALL outcomes of /forgot-password — even
+# unknown emails, admin emails, and SMTP failures. Same string defended
+# in test_forgot_password.py — keep them in sync.
+_FORGOT_PASSWORD_GENERIC_RESPONSE = {
+    "status": "ok",
+    "message": "If an account exists for that email, a temporary password has been sent.",
+}
+
+
+def _generate_temp_password(length: int = 12) -> str:
+    """Cryptographically random temp password. Mix of upper/lower/digits
+    (no special chars — easier to type from email; we trade a tiny bit
+    of entropy for fewer "weird-character" support tickets). 12 chars
+    of [A-Za-z0-9] = ~71 bits of entropy, well above brute-force range."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Anonymous endpoint. ALWAYS returns 200 with the same generic
+    message regardless of:
+      - whether the email exists
+      - whether the email belongs to an admin (admins reset via CLI)
+      - whether SMTP succeeded
+
+    Why: prevents enumeration of valid HR emails. An attacker can't
+    paste a list of emails and learn which ones are real accounts.
+
+    Atomicity: the password_hash is only updated AFTER the email send
+    succeeds. If SMTP fails, the user's existing password keeps working
+    — locking them out of their account because we couldn't send an
+    email would be worse than not resetting.
+
+    Successful resets bump password_changed_at, invalidating any other
+    live session via the pw_v check in _resolve_user_with_role.
+    """
+    email_lower = payload.email.lower()
+    hr = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
+
+    # Walk through the privileged-email cases without exposing them.
+    # An admin email or a missing email both fall through to the same
+    # generic 200 response below — no SMTP call, no DB write.
+    if hr is None or hr.role != "hr":
+        return _FORGOT_PASSWORD_GENERIC_RESPONSE
+
+    # Generate the temp password and try to email it BEFORE writing.
+    # If SMTP fails the user keeps their existing password.
+    temp_password = _generate_temp_password()
+    email_ok, email_err = send_temp_password_email(
+        hr_email=hr.email,
+        hr_name=hr.name,
+        login_url=f"{APP_BASE_URL}/login",
+        temp_password=temp_password,
+    )
+    if not email_ok:
+        # Logged in send_temp_password_email; surface generic message.
+        return _FORGOT_PASSWORD_GENERIC_RESPONSE
+
+    # Email sent — now safely commit the password rotation.
+    hr.password_hash = hash_password(temp_password)
+    hr.password_changed_at = _utcnow_naive()
+    db.commit()
+    return _FORGOT_PASSWORD_GENERIC_RESPONSE
+
 
 @router.get("/session-status")
 def session_status(request: Request, db: Session = Depends(get_db)):

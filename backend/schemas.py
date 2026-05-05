@@ -24,6 +24,15 @@ class HRLoginResponse(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordRequest(BaseModel):
+    """POST /api/hr/forgot-password. Anonymous endpoint — only the
+    email address is needed. The endpoint always returns the same
+    generic 200 message regardless of whether the email exists, was
+    sent successfully, or belongs to an admin (security best-practice
+    to prevent email enumeration)."""
+    email: EmailStr
+
+
 class ChangePasswordRequest(BaseModel):
     """POST /api/hr/change-password (and the parallel /api/admin/...).
     The session cookie identifies the user; current_password is required
