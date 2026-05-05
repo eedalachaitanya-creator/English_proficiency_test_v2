@@ -67,11 +67,17 @@ def _resolve_user_with_role(
     distinct error messages — admins and HRs both get the same generic
     "not authenticated" response if they try to use the wrong endpoint).
     """
+    # All three failure modes (no cookie / deleted user / wrong role)
+    # return the SAME generic 401 message. Different messages would let
+    # an attacker distinguish "this user_id was once valid but is now
+    # deleted" from "no cookie at all" by crafting session cookies.
+    GENERIC_401 = "Not authenticated. Please log in."
+
     hr_id = request.session.get("hr_admin_id")
     if not hr_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated. Please log in.",
+            detail=GENERIC_401,
         )
 
     hr = db.query(HRAdmin).filter(HRAdmin.id == hr_id).first()
@@ -80,16 +86,13 @@ def _resolve_user_with_role(
         request.session.clear()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid session. Please log in again.",
+            detail=GENERIC_401,
         )
 
     if hr.role != expected_role:
-        # Wrong role for this endpoint (e.g., admin trying to use an HR
-        # route). Don't reveal the actual role — same generic 401 as the
-        # no-session case.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated. Please log in.",
+            detail=GENERIC_401,
         )
 
     return hr

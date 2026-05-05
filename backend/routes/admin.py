@@ -10,6 +10,8 @@ Every route except /login is protected by `Depends(require_admin)`. The
 session cookie is the same one HR uses (key: `hr_admin_id`); role
 enforcement happens inside the dependency.
 """
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -23,6 +25,15 @@ from schemas import (
     HRCreateByAdminResponse,
     HRSummary,
 )
+
+
+# Read APP_BASE_URL at module load — same pattern as routes/hr.py to avoid
+# the lazy `from main import APP_BASE_URL` inside the handler, which works
+# today but would deadlock if anyone ever moves it to module scope (admin
+# is imported by main, and a top-level back-import would cycle). The
+# production guard in main.py still enforces that this env var is set in
+# IS_PRODUCTION mode.
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -168,9 +179,9 @@ def create_hr(
     db.refresh(hr)
 
     # Send welcome email (best-effort — same pattern as candidate invitations).
-    # Lazy import so a missing SMTP module doesn't crash the import chain.
+    # Lazy import of email_service only (SMTP libs are big); APP_BASE_URL
+    # comes from the module-level read above.
     from email_service import send_hr_welcome_email
-    from main import APP_BASE_URL
 
     email_ok, email_err = send_hr_welcome_email(
         hr_email=hr.email,
