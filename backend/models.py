@@ -31,15 +31,29 @@ def _utcnow():
 # Users
 # ------------------------------------------------------------------
 class HRAdmin(Base):
+    """
+    Account row for both HR users and admins. The role column distinguishes:
+      - 'hr'    — uses the candidate dashboard, creates invitations, views results.
+      - 'admin' — uses the admin portal only, creates HR accounts.
+    These are strictly disjoint roles, not a privilege hierarchy. See
+    docs/superpowers/specs/2026-05-04-admin-portal-design.md.
+    """
     __tablename__ = "hr_admins"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('admin', 'hr')",
+            name="ck_hr_admins_role",
+        ),
+    )
 
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+    role = Column(String(10), default="hr", nullable=False)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
 
-    # Each HR has many invitations they've sent.
+    # Each HR has many invitations they've sent. Admins won't have any.
     invitations = relationship("Invitation", back_populates="hr", cascade="all, delete-orphan")
 
 

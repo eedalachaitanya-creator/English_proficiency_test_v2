@@ -52,17 +52,20 @@ def generate_access_code() -> str:
 
 
 # ------------------------------------------------------------------
-# Session dependency
+# Session dependencies
 # ------------------------------------------------------------------
-def require_hr(request: Request, db: Session = Depends(get_db)) -> HRAdmin:
+def _resolve_user_with_role(
+    request: Request,
+    db: Session,
+    expected_role: str,
+) -> HRAdmin:
     """
-    FastAPI dependency. Add to any route that requires HR login:
-
-        @router.get("/some-protected-thing")
-        def handler(hr: HRAdmin = Depends(require_hr)):
-            ...
-
-    Returns the logged-in HRAdmin or raises 401.
+    Shared lookup: pull hr_admin_id from the session, fetch the row, and
+    enforce the given role. Centralized so role enforcement is identical
+    across require_hr and require_admin and a new role can be added in
+    one place. Always raises 401 on any failure (no role-leak via
+    distinct error messages — admins and HRs both get the same generic
+    "not authenticated" response if they try to use the wrong endpoint).
     """
     hr_id = request.session.get("hr_admin_id")
     if not hr_id:
@@ -80,4 +83,41 @@ def require_hr(request: Request, db: Session = Depends(get_db)) -> HRAdmin:
             detail="Invalid session. Please log in again.",
         )
 
+    if hr.role != expected_role:
+        # Wrong role for this endpoint (e.g., admin trying to use an HR
+        # route). Don't reveal the actual role — same generic 401 as the
+        # no-session case.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Please log in.",
+        )
+
     return hr
+
+
+def require_hr(request: Request, db: Session = Depends(get_db)) -> HRAdmin:
+    """
+    FastAPI dependency. Add to any route that requires HR login:
+
+        @router.get("/some-protected-thing")
+        def handler(hr: HRAdmin = Depends(require_hr)):
+            ...
+
+    Returns the logged-in HRAdmin (with role='hr') or raises 401.
+    Admin accounts are explicitly NOT accepted — see _resolve_user_with_role.
+    """
+    return _resolve_user_with_role(request, db, expected_role="hr")
+
+
+def require_admin(request: Request, db: Session = Depends(get_db)) -> HRAdmin:
+    """
+    FastAPI dependency. Add to admin-portal routes:
+
+        @router.get("/api/admin/some-thing")
+        def handler(admin: HRAdmin = Depends(require_admin)):
+            ...
+
+    Returns the logged-in admin (role='admin') or raises 401. HR accounts
+    are explicitly NOT accepted.
+    """
+    return _resolve_user_with_role(request, db, expected_role="admin")

@@ -137,11 +137,17 @@ def _validate_window(valid_from: datetime, valid_until: datetime) -> None:
 def login(payload: HRLoginRequest, request: Request, db: Session = Depends(get_db)):
     """
     Validate email + password, set session cookie, return HR profile.
-    Same generic 401 message for "no such user" and "wrong password" — don't
-    leak which one failed (slows down enumeration attacks).
+    Same generic 401 message for every failure mode ("no such user",
+    "wrong password", "credentials are correct but account is admin not
+    HR") — don't leak which one failed (slows enumeration attacks AND
+    avoids hinting that the email belongs to an admin).
     """
     hr = db.query(HRAdmin).filter(HRAdmin.email == payload.email.lower()).first()
-    if not hr or not verify_password(payload.password, hr.password_hash):
+    if (
+        not hr
+        or hr.role != "hr"
+        or not verify_password(payload.password, hr.password_hash)
+    ):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     request.session["hr_admin_id"] = hr.id
@@ -162,6 +168,12 @@ def me(hr: HRAdmin = Depends(require_hr)):
 
 @router.get("/session-status")
 def session_status(request: Request, db: Session = Depends(get_db)):
+    """
+    Silent probe used by the login page on mount. Always returns 200 to
+    avoid red 401s in the browser console; returns `logged_in: false` for
+    any non-HR situation (no session, deleted user, OR admin session).
+    The admin equivalent lives at /api/admin/session-status.
+    """
     hr_id = request.session.get("hr_admin_id")
     if not hr_id:
         return {"logged_in": False, "user": None}
@@ -171,6 +183,13 @@ def session_status(request: Request, db: Session = Depends(get_db)):
         # Session has an hr_admin_id but the user was deleted from the DB.
         # Clear the stale session and report logged-out.
         request.session.clear()
+        return {"logged_in": False, "user": None}
+
+    if hr.role != "hr":
+        # An admin session exists; from the HR portal's perspective the
+        # user is logged-out. Don't clear the cookie — the admin portal
+        # needs it. The login page also probes /api/admin/session-status,
+        # which will pick this up.
         return {"logged_in": False, "user": None}
 
     return {

@@ -256,5 +256,10 @@ TEAM_HANDOFF.md
 # Zip uploads/exports (transient, never the source of truth)
 *.zip
 
+# Postgres / SQLite dumps — local backups, never the source of truth
+*.sql
+*.dump
+ept_dump_*
+
 # Local SMTP / debug test scripts (not part of the deliverable)
 backend/test_smtp.py

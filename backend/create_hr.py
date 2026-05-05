@@ -44,6 +44,15 @@ def main():
     try:
         existing = db.query(HRAdmin).filter(HRAdmin.email == email).first()
 
+        if existing and existing.role == "admin":
+            print(
+                f"Error: an admin account with email '{email}' already exists (id={existing.id}).\n"
+                f"Refusing to silently demote an admin to HR. Delete or rename the\n"
+                f"admin account first (or use a different email for this HR).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         if existing and not args.force:
             print(
                 f"Error: HR admin with email '{email}' already exists (id={existing.id}).\n"
@@ -62,6 +71,7 @@ def main():
                 name=name,
                 email=email,
                 password_hash=hash_password(args.password),
+                role="hr",
             )
             db.add(hr)
             db.commit()

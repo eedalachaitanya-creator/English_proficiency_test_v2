@@ -25,6 +25,56 @@ class HRLoginResponse(BaseModel):
 
 
 # ============================================================
+# Admin portal — auth + HR management
+# See docs/superpowers/specs/2026-05-04-admin-portal-design.md.
+# ============================================================
+class AdminLoginRequest(BaseModel):
+    """POST /api/admin/login. Same shape as HRLoginRequest; kept as a
+    distinct class so future admin-only fields (e.g., 2FA token) don't
+    require touching the HR login schema."""
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AdminLoginResponse(BaseModel):
+    """Returned by /api/admin/login and /api/admin/me. Includes role so
+    the frontend can sanity-check (defense-in-depth — backend auth is the
+    real boundary)."""
+    id: int
+    name: str
+    email: EmailStr
+    role: str  # always "admin" — the route returns 401 for any other role
+
+
+class HRSummary(BaseModel):
+    """One row in GET /api/admin/hrs. The admin doesn't need invitation
+    counts or other heavy aggregates here — keep this lean for the table."""
+    id: int
+    name: str
+    email: EmailStr
+    created_at: datetime
+
+
+class HRCreateByAdminRequest(BaseModel):
+    """POST /api/admin/hrs. Admin types the password directly; we pass
+    the plaintext to bcrypt server-side. Min password length here mirrors
+    the create_hr.py CLI rule for consistency."""
+    name: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class HRCreateByAdminResponse(BaseModel):
+    """Response after creating an HR. Includes email_status so the admin
+    UI can surface SMTP failures the same way candidate-invite does."""
+    id: int
+    name: str
+    email: EmailStr
+    email_status: str  # "sent" | "failed" | "pending"
+    email_error: Optional[str] = None
+
+
+# ============================================================
 # Invitation creation (HR side)
 # ============================================================
 # IANA timezone names accepted from HR. Allowlist (not free-text) so an

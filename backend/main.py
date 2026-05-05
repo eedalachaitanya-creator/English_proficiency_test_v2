@@ -143,10 +143,12 @@ from routes import hr as hr_routes
 from routes import candidate as candidate_routes
 from routes import submit as submit_routes
 from routes import hr_content as hr_content_routes
+from routes import admin as admin_routes
 app.include_router(hr_routes.router)
 app.include_router(candidate_routes.router)
 app.include_router(submit_routes.router)
 app.include_router(hr_content_routes.router)
+app.include_router(admin_routes.router)
 
 
 # Catch-all so an unknown /api/... path returns 404 JSON.
