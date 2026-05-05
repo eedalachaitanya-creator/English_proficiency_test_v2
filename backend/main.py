@@ -25,14 +25,34 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 IS_PRODUCTION = ENVIRONMENT == "production"
 
 DEV_SESSION_SECRET = "dev-only-secret-change-in-production"
+DEV_APP_BASE_URL = "http://localhost:8000"
 SESSION_SECRET = os.getenv("SESSION_SECRET", DEV_SESSION_SECRET)
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
+APP_BASE_URL = os.getenv("APP_BASE_URL", DEV_APP_BASE_URL)
+
+# Cookie Secure flag — defaults to ON in production, OFF in dev. Override with
+# SESSION_COOKIE_SECURE=false when running production-mode behind plain HTTP
+# (e.g., a LAN-only deployment at http://10.0.0.14 with no TLS termination).
+# Without this override, browsers refuse to send the session cookie over HTTP
+# and HR login appears to succeed but every follow-up request returns 401.
+SESSION_COOKIE_SECURE = os.getenv(
+    "SESSION_COOKIE_SECURE",
+    "true" if IS_PRODUCTION else "false",
+).lower() == "true"
 
 # Production must have a real session secret — refuse to start otherwise.
 if IS_PRODUCTION and SESSION_SECRET == DEV_SESSION_SECRET:
     raise RuntimeError(
         "SESSION_SECRET environment variable must be set in production. "
         "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+    )
+
+# Same guard for APP_BASE_URL — if this stays at the dev default in
+# production, every invitation email goes out with http://localhost:8000/exam/...
+# URLs that don't work for any candidate. Fail fast at startup instead.
+if IS_PRODUCTION and APP_BASE_URL == DEV_APP_BASE_URL:
+    raise RuntimeError(
+        "APP_BASE_URL environment variable must be set in production. "
+        "Example: APP_BASE_URL=https://app.yourcompany.com or http://10.0.0.14"
     )
 
 # Loud warning if running on the dev secret in development. (In production we
@@ -95,7 +115,7 @@ app.add_middleware(
     secret_key=SESSION_SECRET,
     max_age=8 * 60 * 60,           # 8-hour HR session
     same_site="lax",
-    https_only=IS_PRODUCTION,      # True in prod (HTTPS-only cookies); False in dev (allows http://localhost)
+    https_only=SESSION_COOKIE_SECURE,
 )
 
 # Cookie-credentialed APIs require an explicit origin allowlist (no "*").
