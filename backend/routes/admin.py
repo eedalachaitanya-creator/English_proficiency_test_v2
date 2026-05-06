@@ -103,6 +103,7 @@ def login(payload: AdminLoginRequest, request: Request, db: Session = Depends(ge
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         expires_in=tokens["expires_in"],
+        must_change_password=user.must_change_password,
     )
 
 
@@ -146,9 +147,15 @@ def refresh_access_token(payload: AdminRefreshTokenRequest, db: Session = Depend
 @router.get("/me", response_model=AdminLoginResponse)
 def me(admin: HRAdmin = Depends(require_admin)):
     """Returns the currently logged-in admin. Frontend uses this to
-    confirm the admin session is alive on page load."""
+    confirm the admin session is alive on page load AND to refresh
+    must_change_password (e.g. after a forced-change reset triggered
+    from another tab)."""
     return AdminLoginResponse(
-        id=admin.id, name=admin.name, email=admin.email, role=admin.role
+        id=admin.id,
+        name=admin.name,
+        email=admin.email,
+        role=admin.role,
+        must_change_password=admin.must_change_password,
     )
 
 

@@ -34,6 +34,13 @@ class HRLoginResponse(BaseModel):
     refresh_token: str | None = None
     token_type: str | None = "bearer"
     expires_in: int | None = None
+    # TRUE while the user is using a temp password from /forgot-password.
+    # Frontend AuthService reads this and the route guard locks all
+    # authenticated routes to /change-password-required until /change-
+    # password is called. Default false on the schema so an old frontend
+    # that doesn't know about this field interprets it as "no action
+    # needed" — backwards-compat with pre-flag clients.
+    must_change_password: bool = False
 
 
 class RefreshTokenRequest(BaseModel):
@@ -100,6 +107,9 @@ class AdminLoginResponse(BaseModel):
     refresh_token: str | None = None
     token_type: str | None = "bearer"
     expires_in: int | None = None
+    # See HRLoginResponse.must_change_password — same semantics, default
+    # false for backwards-compat with pre-flag frontends.
+    must_change_password: bool = False
 
 
 class AdminRefreshTokenRequest(BaseModel):

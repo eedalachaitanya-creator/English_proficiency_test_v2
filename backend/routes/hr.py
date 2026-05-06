@@ -202,6 +202,7 @@ def login(payload: HRLoginRequest, request: Request, db: Session = Depends(get_d
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         expires_in=tokens["expires_in"],
+        must_change_password=hr.must_change_password,
     )
 
 
@@ -246,8 +247,15 @@ def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get
 
 @router.get("/me", response_model=HRLoginResponse)
 def me(hr: HRAdmin = Depends(require_hr)):
-    """Returns the currently logged-in HR. Frontend uses this to confirm session is alive."""
-    return HRLoginResponse(id=hr.id, name=hr.name, email=hr.email)
+    """Returns the currently logged-in HR. Frontend uses this to confirm
+    the session is alive AND to refresh must_change_password on app
+    boot (e.g. after a forced-change reset triggered from another tab)."""
+    return HRLoginResponse(
+        id=hr.id,
+        name=hr.name,
+        email=hr.email,
+        must_change_password=hr.must_change_password,
+    )
 
 
 @router.post("/change-password")
