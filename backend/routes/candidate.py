@@ -149,7 +149,11 @@ def _assign_content(inv: Invitation, db: Session):
     """
     # ---- Reading: passage + question set ----
     if inv.include_reading:
-        passages = db.query(Passage).filter(Passage.difficulty == inv.difficulty).all()
+        passages = db.query(Passage).filter(
+            Passage.difficulty == inv.difficulty,
+            Passage.deleted_at.is_(None),
+            Passage.disabled_at.is_(None),
+        ).all()
         if not passages:
             raise HTTPException(
                 status_code=500,
@@ -165,6 +169,8 @@ def _assign_content(inv: Invitation, db: Session):
             .filter(
                 Question.passage_id == passage.id,
                 Question.question_type == "reading_comp",
+                Question.deleted_at.is_(None),
+                Question.disabled_at.is_(None),
             )
             .all()
         )
@@ -181,6 +187,8 @@ def _assign_content(inv: Invitation, db: Session):
                 Question.difficulty == inv.difficulty,
                 Question.passage_id.is_(None),
                 Question.question_type.in_(["grammar", "vocabulary", "fill_blank"]),
+                Question.deleted_at.is_(None),
+                Question.disabled_at.is_(None),
             )
             .all()
         )
@@ -201,7 +209,11 @@ def _assign_content(inv: Invitation, db: Session):
 
     # ---- Speaking: 3 prompts ----
     if inv.include_speaking:
-        topics = db.query(SpeakingTopic).filter(SpeakingTopic.difficulty == inv.difficulty).all()
+        topics = db.query(SpeakingTopic).filter(
+            SpeakingTopic.difficulty == inv.difficulty,
+            SpeakingTopic.deleted_at.is_(None),
+            SpeakingTopic.disabled_at.is_(None),
+        ).all()
         if len(topics) < SPEAKING_QUESTIONS_PER_TEST:
             raise HTTPException(
                 status_code=500,
@@ -215,7 +227,11 @@ def _assign_content(inv: Invitation, db: Session):
 
     # ---- Writing: one essay prompt ----
     if inv.include_writing:
-        writing_topics = db.query(WritingTopic).filter(WritingTopic.difficulty == inv.difficulty).all()
+        writing_topics = db.query(WritingTopic).filter(
+            WritingTopic.difficulty == inv.difficulty,
+            WritingTopic.deleted_at.is_(None),
+            WritingTopic.disabled_at.is_(None),
+        ).all()
         if not writing_topics:
             raise HTTPException(
                 status_code=500,

@@ -74,6 +74,8 @@ class Passage(Base):
     topic = Column(String(100))
     word_count = Column(Integer)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+    disabled_at = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
 
     # RC questions tied to this passage (passage_id IS NOT NULL on those rows).
     questions = relationship(
@@ -102,6 +104,13 @@ class Question(Base):
     options = Column(JSON, nullable=False)        # list[str], length 4
     correct_answer = Column(Integer, nullable=False)  # 0..3 (index into options)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+    # When set, row is "disabled" — visible to HR but excluded from new
+    # invitations. Toggleable via /api/hr-content/<resource>/{id}/toggle-disabled.
+    disabled_at = Column(DateTime, nullable=True)
+    # When set, row is "soft-deleted" — hidden from HR list and excluded
+    # from new invitations. Existing invitations snapshot IDs at creation
+    # time, so they continue to work even after a content row is deleted.
+    deleted_at = Column(DateTime, nullable=True)
 
     passage = relationship("Passage", back_populates="questions")
 
@@ -117,6 +126,10 @@ class SpeakingTopic(Base):
     difficulty = Column(String(20), nullable=False, index=True)  # intermediate | expert
     category = Column(String(100))
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+   
+    disabled_at = Column(DateTime, nullable=True)
+   
+    deleted_at = Column(DateTime, nullable=True)
 
 
 # ------------------------------------------------------------------
@@ -273,6 +286,10 @@ class WritingTopic(Base):
     max_words = Column(Integer, nullable=False, default=300)
     category = Column(String(100))
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+    
+    disabled_at = Column(DateTime, nullable=True)
+   
+    deleted_at = Column(DateTime, nullable=True)
 
 
 class WritingResponse(Base):

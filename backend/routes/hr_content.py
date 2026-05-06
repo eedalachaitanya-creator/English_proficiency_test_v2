@@ -21,6 +21,7 @@ expire or contact the developer to handle the cleanup explicitly.
 from io import StringIO
 import csv
 from typing import Optional, List
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
@@ -167,7 +168,7 @@ def list_passages(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    q = db.query(Passage).order_by(Passage.id.desc())
+    q = db.query(Passage).filter(Passage.deleted_at.is_(None)).order_by(Passage.id.desc())
     if difficulty:
         _validate_difficulty(difficulty)
         q = q.filter(Passage.difficulty == difficulty)
@@ -236,13 +237,40 @@ def delete_passage(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    passage = db.query(Passage).filter(Passage.id == passage_id).first()
+    """Soft delete — sets deleted_at timestamp. Hidden from HR list afterward.
+    Existing invitations are unaffected because they snapshot assigned IDs
+    at creation time. _check_passage_in_use removed: soft delete cannot
+    cause FK violations."""
+    passage = db.query(Passage).filter(
+        Passage.id == passage_id,
+        Passage.deleted_at.is_(None),
+    ).first()
     if not passage:
         raise HTTPException(status_code=404, detail="passage not found")
-    _check_passage_in_use(db, passage_id)
-    db.delete(passage)
+    passage.deleted_at = datetime.utcnow()
     db.commit()
     return None
+
+
+@router.post("/passages/{passage_id}/toggle-disabled", response_model=schemas.PassageOut)
+def toggle_passage_disabled(
+    passage_id: int,
+    db: Session = Depends(get_db),
+    hr: HRAdmin = Depends(require_hr),
+):
+    """Toggle disabled state. NULL → set to now (disabled). Non-NULL → set
+    to NULL (re-enabled). New invitations skip disabled items; existing
+    invitations are unaffected."""
+    passage = db.query(Passage).filter(
+        Passage.id == passage_id,
+        Passage.deleted_at.is_(None),
+    ).first()
+    if not passage:
+        raise HTTPException(status_code=404, detail="passage not found")
+    passage.disabled_at = None if passage.disabled_at else datetime.utcnow()
+    db.commit()
+    db.refresh(passage)
+    return passage
 
 
 @router.post("/passages/bulk", response_model=schemas.BulkImportResult)
@@ -309,7 +337,7 @@ def list_questions(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    q = db.query(Question).order_by(Question.id.desc())
+    q = db.query(Question).filter(Question.deleted_at.is_(None)).order_by(Question.id.desc())
     if type:
         _validate_question_type(type)
         q = q.filter(Question.question_type == type)
@@ -399,13 +427,35 @@ def delete_question(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    question = db.query(Question).filter(Question.id == question_id).first()
+    """Soft delete — see delete_passage for rationale."""
+    question = db.query(Question).filter(
+        Question.id == question_id,
+        Question.deleted_at.is_(None),
+    ).first()
     if not question:
         raise HTTPException(status_code=404, detail="question not found")
-    _check_question_in_use(db, question_id)
-    db.delete(question)
+    question.deleted_at = datetime.utcnow()
     db.commit()
     return None
+
+
+@router.post("/questions/{question_id}/toggle-disabled", response_model=schemas.QuestionOut)
+def toggle_question_disabled(
+    question_id: int,
+    db: Session = Depends(get_db),
+    hr: HRAdmin = Depends(require_hr),
+):
+    """Toggle disabled state. See toggle_passage_disabled for rationale."""
+    question = db.query(Question).filter(
+        Question.id == question_id,
+        Question.deleted_at.is_(None),
+    ).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    question.disabled_at = None if question.disabled_at else datetime.utcnow()
+    db.commit()
+    db.refresh(question)
+    return question
 
 
 @router.post("/questions/bulk", response_model=schemas.BulkImportResult)
@@ -493,7 +543,7 @@ def list_writing_topics(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    q = db.query(WritingTopic).order_by(WritingTopic.id.desc())
+    q = db.query(WritingTopic).filter(WritingTopic.deleted_at.is_(None)).order_by(WritingTopic.id.desc())
     if difficulty:
         _validate_difficulty(difficulty)
         q = q.filter(WritingTopic.difficulty == difficulty)
@@ -566,13 +616,35 @@ def delete_writing_topic(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    topic = db.query(WritingTopic).filter(WritingTopic.id == topic_id).first()
+    """Soft delete — see delete_passage for rationale."""
+    topic = db.query(WritingTopic).filter(
+        WritingTopic.id == topic_id,
+        WritingTopic.deleted_at.is_(None),
+    ).first()
     if not topic:
         raise HTTPException(status_code=404, detail="writing topic not found")
-    _check_writing_topic_in_use(db, topic_id)
-    db.delete(topic)
+    topic.deleted_at = datetime.utcnow()
     db.commit()
     return None
+
+
+@router.post("/writing-topics/{topic_id}/toggle-disabled", response_model=schemas.WritingTopicOut)
+def toggle_writing_topic_disabled(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    hr: HRAdmin = Depends(require_hr),
+):
+    """Toggle disabled state. See toggle_passage_disabled for rationale."""
+    topic = db.query(WritingTopic).filter(
+        WritingTopic.id == topic_id,
+        WritingTopic.deleted_at.is_(None),
+    ).first()
+    if not topic:
+        raise HTTPException(status_code=404, detail="writing topic not found")
+    topic.disabled_at = None if topic.disabled_at else datetime.utcnow()
+    db.commit()
+    db.refresh(topic)
+    return topic
 
 
 @router.post("/writing-topics/bulk", response_model=schemas.BulkImportResult)
@@ -642,7 +714,7 @@ def list_speaking_topics(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    q = db.query(SpeakingTopic).order_by(SpeakingTopic.id.desc())
+    q = db.query(SpeakingTopic).filter(SpeakingTopic.deleted_at.is_(None)).order_by(SpeakingTopic.id.desc())
     if difficulty:
         _validate_difficulty(difficulty)
         q = q.filter(SpeakingTopic.difficulty == difficulty)
@@ -702,10 +774,32 @@ def delete_speaking_topic(
     db: Session = Depends(get_db),
     hr: HRAdmin = Depends(require_hr),
 ):
-    topic = db.query(SpeakingTopic).filter(SpeakingTopic.id == topic_id).first()
+    """Soft delete — see delete_passage for rationale."""
+    topic = db.query(SpeakingTopic).filter(
+        SpeakingTopic.id == topic_id,
+        SpeakingTopic.deleted_at.is_(None),
+    ).first()
     if not topic:
         raise HTTPException(status_code=404, detail="speaking topic not found")
-    _check_speaking_topic_in_use(db, topic_id)
-    db.delete(topic)
+    topic.deleted_at = datetime.utcnow()
     db.commit()
     return None
+
+
+@router.post("/speaking-topics/{topic_id}/toggle-disabled", response_model=schemas.SpeakingTopicOut)
+def toggle_speaking_topic_disabled(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    hr: HRAdmin = Depends(require_hr),
+):
+    """Toggle disabled state. See toggle_passage_disabled for rationale."""
+    topic = db.query(SpeakingTopic).filter(
+        SpeakingTopic.id == topic_id,
+        SpeakingTopic.deleted_at.is_(None),
+    ).first()
+    if not topic:
+        raise HTTPException(status_code=404, detail="speaking topic not found")
+    topic.disabled_at = None if topic.disabled_at else datetime.utcnow()
+    db.commit()
+    db.refresh(topic)
+    return topic
