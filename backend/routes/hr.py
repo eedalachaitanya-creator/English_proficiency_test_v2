@@ -427,7 +427,17 @@ def session_status(request: Request, db: Session = Depends(get_db)):
 
     return {
         "logged_in": True,
-        "user": {"id": hr.id, "name": hr.name, "email": hr.email},
+        "user": {
+            "id": hr.id,
+            "name": hr.name,
+            "email": hr.email,
+            # Surface must_change_password here too — the frontend
+            # AuthService populates its signal from session-status on
+            # app boot, so without this a refresh during the forced-
+            # change flow would silently let the user past the route
+            # guard before the next /me / login refresh.
+            "must_change_password": hr.must_change_password,
+        },
     }
 
 

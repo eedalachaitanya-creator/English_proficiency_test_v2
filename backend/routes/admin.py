@@ -314,6 +314,11 @@ def session_status(request: Request, db: Session = Depends(get_db)):
             "name": user.name,
             "email": user.email,
             "role": user.role,
+            # Same rationale as the HR session-status — frontend
+            # AuthService reads this on app boot to populate its
+            # mustChangePassword signal, so a refresh during the
+            # forced-change flow doesn't silently bypass the guard.
+            "must_change_password": user.must_change_password,
         },
     }
 
