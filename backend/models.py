@@ -56,6 +56,12 @@ class HRAdmin(Base):
     # invalidate other sessions for the same user — see auth.py
     # _resolve_user_with_role and routes/hr.py change_password.
     password_changed_at = Column(DateTime, default=_utcnow, nullable=False)
+    # TRUE while the user is using a temp password emailed by
+    # /forgot-password. Set on reset; cleared on successful
+    # /change-password. Frontend guard + backend strict-auth dep both
+    # consult this flag to lock everything except the change-password
+    # screen. See docs/superpowers/specs/2026-05-06-admin-forgot-password-design.md.
+    must_change_password = Column(Boolean, default=False, nullable=False)
 
     # Each HR has many invitations they've sent. Admins won't have any.
     invitations = relationship("Invitation", back_populates="hr", cascade="all, delete-orphan")
