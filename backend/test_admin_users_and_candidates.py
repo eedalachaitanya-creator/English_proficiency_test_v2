@@ -141,6 +141,46 @@ def test_admin_users_endpoint_hr_with_zero_candidates_shows_zero_not_null():
         _drop_user(hr.id)
 
 
+def test_admin_users_endpoint_orders_admins_first_then_hrs():
+    """The dashboard groups admin rows above HR rows so admins are easy
+    to spot at a glance. Within each group the order is still newest-
+    first by created_at."""
+    # Insert two HRs and one admin in a deliberate order so chronological
+    # ordering would interleave them. With proper grouping, the admin
+    # row must appear ABOVE both HR rows even though it was inserted
+    # in the middle.
+    hr_first = _make_user("hr", name_prefix="HrFirst")
+    admin = _make_user("admin", name_prefix="Adm")
+    hr_second = _make_user("hr", name_prefix="HrSecond")
+    try:
+        c = _login_admin_client(admin.email)
+        r = c.get("/api/admin/users")
+        assert r.status_code == 200
+        rows = r.json()
+
+        # Find the indices of our three test users in the response.
+        # Other rows (real users from prior tests / dev data) may exist
+        # in between; we only care about the relative order of OUR three.
+        ids_in_order = [row["id"] for row in rows]
+        idx_admin = ids_in_order.index(admin.id)
+        idx_hr_first = ids_in_order.index(hr_first.id)
+        idx_hr_second = ids_in_order.index(hr_second.id)
+
+        # Admin must come above both HRs.
+        assert idx_admin < idx_hr_first, (
+            "admin row must precede HR rows; "
+            f"got admin@{idx_admin}, hr_first@{idx_hr_first}"
+        )
+        assert idx_admin < idx_hr_second
+        # Within HRs, hr_second was inserted later so it should appear
+        # before hr_first (newest-first).
+        assert idx_hr_second < idx_hr_first
+    finally:
+        _drop_user(admin.id)
+        _drop_user(hr_first.id)
+        _drop_user(hr_second.id)
+
+
 def test_admin_users_endpoint_requires_admin_session():
     """Anonymous → 401."""
     c = TestClient(app)

@@ -331,16 +331,20 @@ def session_status(request: Request, db: Session = Depends(get_db)):
 @router.get("/users", response_model=list[AdminUserSummary])
 def list_users(_admin: HRAdmin = Depends(require_admin_strict), db: Session = Depends(get_db)):
     """
-    Every row in hr_admins (both 'hr' and 'admin' roles), newest first,
-    each annotated with how many invitations they've sent. Admins
-    always have count=0 (they can't create invitations); HRs get an
-    accurate aggregate via a single LEFT JOIN with a COUNT subquery —
-    no per-row N+1 lookups.
+    Every row in hr_admins (both 'hr' and 'admin' roles), each
+    annotated with how many invitations they've sent. Admins always
+    have count=0 (they can't create invitations); HRs get an accurate
+    aggregate via a single LEFT JOIN with a COUNT subquery — no
+    per-row N+1 lookups.
+
+    Ordering: admins first, then HRs. Within each group, newest-first
+    by created_at. Grouping admins above HRs makes the admin section
+    of the table easy to spot at a glance.
     """
     # Aggregate invitation counts per HR in a single grouped subquery.
     # Imported lazily to avoid pulling Invitation/SQLAlchemy func into
     # the module top-level just for this one endpoint.
-    from sqlalchemy import func
+    from sqlalchemy import case, func
     from models import Invitation
     invite_counts = (
         db.query(
@@ -351,10 +355,14 @@ def list_users(_admin: HRAdmin = Depends(require_admin_strict), db: Session = De
         .subquery()
     )
 
+    # Admin rows get rank 0, HR rows rank 1 — ascending sort puts
+    # admins above HRs. created_at descending is the secondary key so
+    # within each group the newest user is at the top.
+    role_rank = case((HRAdmin.role == "admin", 0), else_=1)
     rows = (
         db.query(HRAdmin, invite_counts.c.count)
         .outerjoin(invite_counts, HRAdmin.id == invite_counts.c.hr_admin_id)
-        .order_by(HRAdmin.created_at.desc())
+        .order_by(role_rank, HRAdmin.created_at.desc())
         .all()
     )
     return [
