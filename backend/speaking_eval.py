@@ -1,26 +1,68 @@
 """
 Speaking evaluation pipeline.
 
-Replaces score_speaking_stub() in scoring.py once an invitation has audio recordings.
+Called from scoring.py via _run_speaking_eval() once an invitation has audio
+recordings on disk. Top-level entry point is score_speaking().
 
-Pipeline per audio file:
-  1. Whisper API  -> transcript + word-level timestamps
-  2. Azure Speech -> pronunciation accuracy + fluency scores
-  3. Python       -> confidence score from filler words, pauses, restarts
+OVERVIEW
 
-Then aggregated across all 3 questions:
-  4. GPT-4o reads all transcripts -> grammar + vocabulary scores
+Each invitation has up to 3 audio recordings (one per assigned speaking topic).
+For EACH recording, we run all 4 stages independently:
 
-Final rubric (must sum to 100):
-  Pronunciation  20%   (Azure AccuracyScore)
-  Fluency        25%   (Azure FluencyScore)
-  Grammar        20%   (GPT-4o)
-  Vocabulary     15%   (GPT-4o)
-  Confidence     20%   (Python signals)
+    1. Whisper API   → transcript + word-level timestamps
+    2. Azure Speech  → pronunciation accuracy + fluency scores
+    3. Python        → confidence score from filler words, pauses, restarts
+    4. GPT-4o        → grammar + vocabulary scores (graded per-question)
 
-Failure handling: each stage is wrapped in try/except. A failure on one stage
-for one question doesn't kill the whole eval — that dimension's score for that
-question is recorded as None and excluded from the average.
+This gives us 5 dimension scores PER QUESTION:
+
+    Q1: pron=88, fluency=90, grammar=85, vocab=80, confidence=82
+    Q2: pron=65, fluency=60, grammar=70, vocab=65, confidence=60
+    Q3: pron=40, fluency=30, grammar=35, vocab=30, confidence=25
+
+We then weight each question's 5 dimensions using the rubric, getting a
+PER-QUESTION total (0-100). The final speaking_score is the average of
+those question totals:
+
+    Q1 total = 88×0.20 + 90×0.25 + 85×0.20 + 80×0.15 + 82×0.20 = 86
+    Q2 total = ... = 64
+    Q3 total = ... = 33
+    speaking_score = mean(86, 64, 33) = 61
+
+RUBRIC WEIGHTS (must sum to 1.0; defined in config.py)
+
+    Pronunciation  20%   (Azure AccuracyScore)
+    Fluency        25%   (Azure FluencyScore)
+    Grammar        20%   (GPT-4o, per-question)
+    Vocabulary     15%   (GPT-4o, per-question)
+    Confidence     20%   (Python signals from transcript timing)
+
+EMPTY / BAD AUDIO HANDLING (multiple guards, fail loud not silently)
+
+    1. File missing on disk          → Q gets all-None dimensions, total = 0
+    2. File < MIN_AUDIO_BYTES (2KB)  → SHORT-CIRCUIT before Whisper, save the API call
+    3. File < MIN_AUDIO_SECONDS      → zero the Q after Whisper sees it's too short
+    4. Whisper hallucination on silence → guard via _is_whisper_hallucination()
+    5. Non-English audio              → zero the Q
+
+In all these cases, the question total comes out as 0 and gets averaged in,
+so a candidate who didn't speak gets penalized rather than excluded.
+
+API CALL FAILURES (different from empty audio)
+
+If Whisper/Azure/GPT-4o ITSELF fails (API down, key missing, etc.) for one
+dimension on one question, that dimension is recorded as None instead of 0.
+The per-question total then renormalizes over the dimensions that DID
+succeed, so a single API outage doesn't tank the score. None is also what
+score_speaking_stub() returns when the entire evaluator can't import.
+
+OFF-TOPIC PENALTY
+
+GPT-4o flags answers that don't address the question (e.g. candidate reads
+the question back, refuses to answer, talks about something unrelated).
+Each off-topic question costs -15 points off the final speaking_score.
+This kicks in AFTER renormalization, so it works the same regardless of
+whether some dimensions failed.
 """
 from __future__ import annotations
 
@@ -185,6 +227,18 @@ def _is_whisper_hallucination(text: str) -> bool:
 # but cap defensively.
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+# Empty/near-empty container threshold. A WebM container with no real audio is
+# typically 200-800 bytes. Anything under 2KB is definitely empty (browser created
+# the container header but the candidate didn't actually speak). We skip Whisper
+# entirely for these to avoid wasted API calls AND to avoid Whisper hallucinating
+# subtitle artefacts on silence (caught downstream by _is_whisper_hallucination,
+# but cheaper to short-circuit before the call).
+#
+# Threshold chosen at 2KB (not 5KB) because a real 1-second compressed recording
+# can be ~3KB. Safer to occasionally let an empty recording through to the
+# downstream guards than to false-reject a valid short answer.
+MIN_AUDIO_BYTES = 2_000
+
 # Common English filler words — used by confidence calculation.
 # Kept conservative; a non-native speaker saying "well" once shouldn't be penalized.
 # Variants here mirror the disfluency prompt sent to Whisper, so what we ask
@@ -202,6 +256,10 @@ FILLER_WORDS = {
 # ==================================================================
 def transcribe_with_whisper(audio_path: Path) -> dict:
     """
+    Stage 1 of the pipeline. Transcribe an audio file using OpenAI's
+    Whisper API, including word-level timestamps used downstream by the
+    confidence calculator.
+
     Returns:
       {
         "text": str,                       # full transcript
@@ -211,6 +269,8 @@ def transcribe_with_whisper(audio_path: Path) -> dict:
       }
 
     Raises RuntimeError on API failure so the caller can mark this question failed.
+    Also raises RuntimeError if audio exceeds MAX_AUDIO_BYTES (defensive cap;
+    we never actually expect 60-90s audio to come close).
     """
     from openai import OpenAI
 
@@ -236,9 +296,10 @@ def transcribe_with_whisper(audio_path: Path) -> dict:
     # rule — Whisper still drops some, especially short or quiet ones. But it
     # measurably improves filler-word detection rates.
     DISFLUENCY_PROMPT = (
-        "This is a spontaneous spoken response from an English assessment test. "
-        "It may contain hesitation sounds like um, uh, umm, ahh, hmm, er, erm, mhm, "
-        "and self-corrections. Transcribe them as spoken without cleaning them up."
+        "This is a spontaneous spoken response from an English-proficiency "
+        "assessment. Transcribe verbatim. Preserve hesitation sounds (um, uh, "
+        "umm, ahh, hmm, er, erm, mhm) and self-corrections — do not clean "
+        "them up. The transcript is used for downstream fluency analysis."
     )
 
     t0 = time.time()
@@ -304,12 +365,18 @@ def transcribe_with_whisper(audio_path: Path) -> dict:
 # ==================================================================
 def assess_pronunciation_with_azure(audio_path: Path, reference_text: str) -> dict:
     """
-    Runs Azure pronunciation assessment in unscripted, continuous mode.
-    "Unscripted" because our prompts are open-ended ("describe a conflict") —
-    we don't know what the candidate will say.
+    Stage 2 of the pipeline. Send the audio file to Azure Speech and get
+    back per-phoneme pronunciation accuracy + fluency scores.
+
+    Mode is "unscripted, continuous" — unscripted because our speaking
+    prompts are open-ended (we don't know what the candidate will say in
+    advance), continuous because audio can be longer than 30s.
 
     reference_text is the Whisper transcript. Azure uses it to align phonemes
     against what the candidate actually said.
+
+    Internally converts the WebM/Opus audio to WAV PCM 16kHz mono first,
+    because the Azure SDK only accepts that format. ffmpeg must be in PATH.
 
     Returns:
       {
@@ -318,7 +385,9 @@ def assess_pronunciation_with_azure(audio_path: Path, reference_text: str) -> di
         "completeness": float,    # 0-100, did they speak vs. silence
       }
 
-    Raises RuntimeError on failure.
+    Raises RuntimeError on failure (no SDK, missing keys, ffmpeg missing,
+    Azure returned no segments). Caller catches this and records None for
+    pronunciation+fluency for that one question.
     """
     try:
         import azure.cognitiveservices.speech as speechsdk
@@ -449,7 +518,10 @@ def _convert_to_wav_16k_mono(src_path: Path) -> Path:
 # ==================================================================
 def calculate_confidence(transcript: str, words: list[dict], duration: float) -> dict:
     """
-    Confidence is a derived metric from observable nervousness markers.
+    Stage 3 of the pipeline. Compute a confidence score for one recording
+    using purely Python — no API calls, runs in milliseconds.
+
+    Confidence is a derived metric from observable nervousness markers:
 
     Word-based signals (from transcript):
       - filler words per minute (more = less confident)
@@ -461,7 +533,18 @@ def calculate_confidence(transcript: str, words: list[dict], duration: float) ->
       - speech ratio (spoken time / total time; low = lots of dead air)
       - leading silence (delay before first word; high = stalling)
 
-    Returns 0-100 score plus the raw signal counts so HR can see WHY.
+    Each signal contributes a penalty (e.g. 5 fillers/min = -10 points).
+    Final score is 100 minus all penalties, clamped 0-100.
+
+    Returns:
+      {
+        "score":           int 0-100,    # the confidence score
+        "filler_per_min":  float,        # raw signals so HR can see WHY
+        "long_pauses":     int,
+        "restarts":        int,
+        "speech_ratio":    float 0-1,
+        "leading_silence": float (seconds),
+      }
     """
     if duration <= 0 or not transcript:
         dbg("confidence", "skipped (zero duration or empty transcript)")
@@ -689,26 +772,36 @@ def _grade_one_response(prompt: str, transcript: str, qno: int) -> dict:
         }
 
     system_msg = (
-        "You are an English proficiency assessor for job recruitment. You grade "
-        "ONE spoken response (provided as a Whisper transcript). The candidate may "
-        "be a native or non-native English speaker; you score for "
-        "CLARITY AND COMMUNICATIVE EFFECTIVENESS, not for adherence to native "
-        "phrasing. Indian, Singaporean, and other regional English variants are "
-        "treated as legitimate English; do not penalize for accent-driven word order "
-        "or article usage as long as meaning is clear.\n\n"
-        "Return ONLY a JSON object:\n"
+        "You are a certified English-proficiency assessor evaluating a "
+        "candidate's spoken response for corporate recruitment. The transcript "
+        "was produced by Whisper from the candidate's audio. Apply the rubric "
+        "below consistently across all candidates.\n\n"
+        "CORE PRINCIPLE: score for CLARITY AND COMMUNICATIVE EFFECTIVENESS, "
+        "not adherence to native phrasing. Indian, Singaporean, and other "
+        "regional English variants are legitimate English. Do not penalize "
+        "accent-driven word order, article usage, or pluralization "
+        "differences when meaning is clear.\n\n"
+        "SCORE STRICTLY ON OBSERVABLE EVIDENCE in the transcript. Do not "
+        "infer what the candidate \"probably meant\" or give credit for "
+        "unwritten ideas.\n\n"
+        "Return ONLY a JSON object — no preamble, no markdown, no commentary:\n"
         '{"grammar": <int 0-100>, "vocabulary": <int 0-100>, '
         '"on_topic": <true|false>, "observation": "<one sentence about quality>"}\n\n'
         f"{_GRAMMAR_ANCHORS}\n\n"
         f"{_VOCAB_ANCHORS}\n\n"
-        "on_topic guidance:\n"
-        "  true  = the answer addresses the question, even imperfectly.\n"
+        "ON_TOPIC GUIDANCE:\n"
+        "  true  = the answer addresses the question, even imperfectly or partially.\n"
         "  false = the answer evades the question, refuses ('I can't say that'),\n"
-        "          reads the question back without answering, or talks about\n"
-        "          something unrelated.\n\n"
-        "observation = ONE sentence (max 25 words) describing the most notable "
-        "strength or weakness in this response. Be specific. No score recap. "
-        "No generic praise. Return only the JSON, nothing else."
+        "          reads the question back without answering, talks about\n"
+        "          something unrelated, or contains no usable answer.\n\n"
+        "  Note: an answer can be on-topic AND poorly executed. on_topic is\n"
+        "  about whether the candidate engaged with the question, not whether\n"
+        "  they did it well.\n\n"
+        "OBSERVATION RULES:\n"
+        "  - Exactly ONE sentence, max 25 words.\n"
+        "  - Specific to THIS response (cite phrasing or pattern if relevant).\n"
+        "  - No score recap. No generic praise. No vague hedges.\n\n"
+        "Return only the JSON object. Nothing else."
     )
 
     user_msg = f"Question: {prompt}\n\nAnswer (transcript): {transcript}\n\nGrade this response."
@@ -822,13 +915,29 @@ def _synthesize_feedback(per_q_results: list[dict], off_topic_qs: list[int]) -> 
 
 def grade_responses_with_gpt4o(transcripts: list[str], topic_prompts: list[str]) -> dict:
     """
-    Grade all responses per-question, then average. Returns:
+    Stage 4 of the pipeline. Grade all responses for grammar + vocabulary
+    using GPT-4o, one question at a time, then synthesize a single feedback
+    paragraph for HR.
+
+    Per-question grading (calling _grade_one_response once per Q) gives us
+    per-question scores. We return BOTH the per-question lists (used by
+    score_speaking to compute per-question totals) AND the dimension averages
+    (used by the dashboard's bar chart).
+
+    Returns:
       {
-        "grammar":   int 0-100 or None,
-        "vocabulary": int 0-100 or None,
-        "feedback":  str,
-        "off_topic_qs": list[int],   # 1-indexed question numbers flagged off-topic
+        "grammar":          int 0-100 or None,    # average across Qs
+        "vocabulary":       int 0-100 or None,    # average across Qs
+        "per_q_grammar":    list[int],            # per-Q grammar scores
+        "per_q_vocabulary": list[int],            # per-Q vocab scores
+        "feedback":         str,                  # single HR-ready paragraph
+        "off_topic_qs":     list[int],            # 1-indexed Q numbers flagged
       }
+
+    A single Q failure (API error mid-batch) → that Q's grammar/vocab become
+    None in the per_q_results list. The averages skip Nones. The per_q
+    lists returned at the end convert None → 0 (so per-question totals
+    treat the Q as a 0, penalizing the candidate).
     """
     dbg("gpt4o", f"per-question grading: {len(transcripts)} responses")
     per_q_results: list[dict] = []
@@ -865,9 +974,24 @@ def grade_responses_with_gpt4o(transcripts: list[str], topic_prompts: list[str])
 
     feedback = _synthesize_feedback(per_q_results, off_topic_qs)
 
+    # Expose per-question grammar/vocabulary so score_speaking() can compute
+    # per-question totals. We use 0 instead of None for failed Qs because
+    # the per-question total formula treats a failed Q as a 0-point Q
+    # (candidate gets penalized for not speaking, not excluded from average).
+    per_q_grammar_list = [
+        r["grammar"] if r["grammar"] is not None else 0
+        for r in per_q_results
+    ]
+    per_q_vocabulary_list = [
+        r["vocabulary"] if r["vocabulary"] is not None else 0
+        for r in per_q_results
+    ]
+
     return {
         "grammar": grammar_avg,
         "vocabulary": vocab_avg,
+        "per_q_grammar": per_q_grammar_list,
+        "per_q_vocabulary": per_q_vocabulary_list,
         "feedback": feedback,
         "off_topic_qs": off_topic_qs,
     }
@@ -878,19 +1002,38 @@ def grade_responses_with_gpt4o(transcripts: list[str], topic_prompts: list[str])
 # ==================================================================
 def score_speaking(invitation: Invitation, db: Session) -> dict:
     """
-    Run the full pipeline for one invitation. Designed to be called from
-    scoring.score_invitation() in place of score_speaking_stub().
+    Top-level entry point for the speaking pipeline. Called from
+    scoring._run_speaking_eval() once per invitation.
 
-    Returns the SAME shape score_speaking_stub returns:
-      {
-        "breakdown": {"pronunciation": int|None, "fluency": int|None, ...},
-        "total": int|None,
-        "feedback": str,
-      }
+    Returns this dict (matches score_speaking_stub's shape so the pipeline
+    is consistent regardless of whether the real eval ran):
 
-    On total failure (no audio at all), returns total=0 with explanatory feedback.
-    On partial failure, dimensions that couldn't be computed are None and the total
-    is computed from successful dimensions only (weights renormalized).
+        {
+          "breakdown":     {"pronunciation": int|None, "fluency": int|None,
+                            "grammar": int|None, "vocabulary": int|None,
+                            "confidence": int|None},
+          "total":         int,        # 0-100, the speaking_score
+          "feedback":      str,        # one-paragraph HR-readable summary
+          "off_topic_qs":  list[int],  # 1-indexed Q numbers that were off-topic
+        }
+
+    HOW THE FINAL TOTAL IS COMPUTED
+
+    For each recording (Q1, Q2, Q3) we run all 4 stages and end up with 5
+    dimension scores per question. We then:
+
+        1. Apply rubric weights to each question's 5 dimensions → per-Q total
+        2. Average those per-Q totals → speaking_score
+        3. Subtract 15 points per off-topic question
+
+    Edge cases:
+        - No audio at all          → total=0, "no recordings submitted" feedback
+        - Audio present, all stages failed → dimensions all None, total=0
+        - Empty/silent audio (< 2KB)       → that Q's dims = 0, drags average down
+        - Single dimension API failure    → that dim is None, renormalized over
+                                              the dimensions that DID succeed
+
+    See the module docstring for the full pipeline overview.
     """
     recordings: list[AudioRecording] = list(invitation.audio_recordings or [])
 
@@ -935,6 +1078,22 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
             per_q_pron.append(None)
             per_q_fluency.append(None)
             per_q_confidence.append(None)
+            continue
+
+        # ---- Empty-audio short circuit ----
+        # Skip Whisper/Azure/GPT entirely if the file is too small to contain real
+        # audio. WebM container alone is ~200-800 bytes; a real recording is
+        # 30KB+. The 2KB threshold catches "candidate clicked stop without
+        # speaking" without false-rejecting valid short answers.
+        file_size = audio_path.stat().st_size
+        if file_size < MIN_AUDIO_BYTES:
+            dbg("guard", f"audio file too small ({file_size} bytes < {MIN_AUDIO_BYTES}) — skipping all stages for this Q")
+            failure_notes.append(f"Question {rec.id}: audio file too small ({file_size} bytes), candidate likely did not speak")
+            transcripts.append("")
+            rec.transcript = ""
+            per_q_pron.append(0)
+            per_q_fluency.append(0)
+            per_q_confidence.append(0)
             continue
 
         # ---- Stage 1: Whisper ----
@@ -1041,6 +1200,8 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
 
     grammar_score: Optional[int] = None
     vocabulary_score: Optional[int] = None
+    per_q_grammar: list[int] = []
+    per_q_vocab: list[int] = []
     llm_feedback = ""
     off_topic_qs: list[int] = []
     if any(t.strip() for t in transcripts):
@@ -1048,6 +1209,8 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
             grading = grade_responses_with_gpt4o(transcripts, prompts_in_order)
             grammar_score = grading["grammar"]
             vocabulary_score = grading["vocabulary"]
+            per_q_grammar = grading["per_q_grammar"]
+            per_q_vocab = grading["per_q_vocabulary"]
             llm_feedback = grading["feedback"]
             off_topic_qs = grading.get("off_topic_qs", [])
             if off_topic_qs:
@@ -1060,11 +1223,91 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
             dbg("gpt4o", f"FAILED: {type(e).__name__}: {e}")
             log.warning("GPT-4o grading failed: %s", e)
             failure_notes.append("Grammar/vocabulary grading failed")
+            # Failed grading: zero out per-Q grammar/vocab so per-question totals
+            # treat them as 0. Length matches the recordings count.
+            per_q_grammar = [0] * len(recordings)
+            per_q_vocab = [0] * len(recordings)
     else:
         dbg("gpt4o", "skipped (no usable transcripts)")
         failure_notes.append("No usable transcripts for grammar/vocabulary grading")
+        per_q_grammar = [0] * len(recordings)
+        per_q_vocab = [0] * len(recordings)
 
-    # ---- Aggregate per-dimension averages (skipping None) ----
+    # ---- Per-question totals (NEW APPROACH) ----
+    # We previously averaged each dimension across questions, then applied rubric
+    # weights once. Now we apply rubric weights per question, then average those
+    # question totals. The math is the same when all dimensions succeed for all
+    # questions, but per-question totals are what HR actually wants to see
+    # (Q1=85, Q2=64, Q3=33) and they make the <50 floor rule semantically clear.
+    #
+    # Rules for a single failed dimension within a question:
+    #   - None means the API call failed (Azure timeout, etc.). Skip from rubric,
+    #     renormalize over the dimensions that succeeded.
+    #   - 0 means the file was empty/hallucinated/non-English. Include as 0 so
+    #     the candidate is penalized for not delivering a usable answer.
+    def _question_total(pron, fluency, grammar, vocab, confidence) -> int:
+        """
+        Apply rubric weights to one question's 5 dimensions, returning a
+        single 0-100 question total.
+
+        None vs 0 handling:
+            None = API call failed (Azure timeout, GPT-4o error, etc.).
+                   That dimension is EXCLUDED from this question's total
+                   and the remaining weights renormalize.
+            0    = file was empty/hallucinated/non-English (caught by guards
+                   in the per-Q loop). Included as 0 so the candidate is
+                   penalized for not delivering a usable answer.
+
+        Example: pron=88, fluency=90, grammar=85, vocab=80, confidence=82
+            All dimensions succeeded:
+                88×0.20 + 90×0.25 + 85×0.20 + 80×0.15 + 82×0.20 = 85.5 → 86
+
+        Example: pron=88, fluency=None (Azure failed), rest the same
+            Excludes fluency, renormalizes over remaining dimensions:
+                (88×0.20 + 85×0.20 + 80×0.15 + 82×0.20) / 0.75 = 84
+        """
+        pairs = [
+            (pron,       RUBRIC_WEIGHTS["pronunciation"]),
+            (fluency,    RUBRIC_WEIGHTS["fluency"]),
+            (grammar,    RUBRIC_WEIGHTS["grammar"]),
+            (vocab,      RUBRIC_WEIGHTS["vocabulary"]),
+            (confidence, RUBRIC_WEIGHTS["confidence"]),
+        ]
+        successful = [(v, w) for v, w in pairs if v is not None]
+        if not successful:
+            return 0
+        weighted_sum = sum(v * w for v, w in successful)
+        weight_used = sum(w for _, w in successful)
+        return round(weighted_sum / weight_used)
+
+    # Compute one total per question. The lists are guaranteed to be the same
+    # length as `recordings` because every per-Q stage appends exactly once
+    # (success path appends a value, failure paths append None or 0).
+    per_question_totals: list[int] = []
+    for i in range(len(recordings)):
+        q_total = _question_total(
+            per_q_pron[i],
+            per_q_fluency[i],
+            per_q_grammar[i] if i < len(per_q_grammar) else 0,
+            per_q_vocab[i] if i < len(per_q_vocab) else 0,
+            per_q_confidence[i],
+        )
+        per_question_totals.append(q_total)
+        dbg("per-Q total", f"Q{i+1}: pron={per_q_pron[i]} fluency={per_q_fluency[i]} "
+                          f"grammar={per_q_grammar[i] if i < len(per_q_grammar) else 0} "
+                          f"vocab={per_q_vocab[i] if i < len(per_q_vocab) else 0} "
+                          f"confidence={per_q_confidence[i]} → total={q_total}")
+
+    # Final speaking score = average of question totals.
+    # A failed question contributes 0, dragging the average down (intentional).
+    if per_question_totals:
+        total = round(mean(per_question_totals))
+    else:
+        total = 0
+
+    # Breakdown for HR dashboard. Same structure as before so existing UI works.
+    # Dimension values are averages across questions (None values excluded);
+    # this is what the dashboard shows in the per-dimension bar chart.
     def _avg(values: list) -> Optional[int]:
         successful = [v for v in values if v is not None]
         if not successful:
@@ -1079,36 +1322,13 @@ def score_speaking(invitation: Invitation, db: Session) -> dict:
         "confidence": _avg(per_q_confidence),
     }
 
-    # Show per-question raw values so it's clear what's being averaged
     dbg("per-Q pron", str(per_q_pron))
     dbg("per-Q fluency", str(per_q_fluency))
+    dbg("per-Q grammar", str(per_q_grammar))
+    dbg("per-Q vocab", str(per_q_vocab))
     dbg("per-Q confidence", str(per_q_confidence))
-
-    # ---- Compute weighted total over successful dimensions only ----
-    weighted_sum = 0.0
-    weight_used = 0.0
-    formula_parts = []
-    for dim, weight in RUBRIC_WEIGHTS.items():
-        v = breakdown[dim]
-        if v is None:
-            formula_parts.append(f"{dim}=None×{weight}")
-            continue
-        contribution = v * weight
-        weighted_sum += contribution
-        weight_used += weight
-        formula_parts.append(f"{dim}={v}×{weight}={contribution:.2f}")
-
-    if weight_used == 0:
-        total = 0
-    else:
-        # Renormalize so partial scoring still produces 0-100, not e.g. 0-80.
-        total = round(weighted_sum / weight_used)
-
-    dbg("final", f"breakdown: " + " | ".join(f"{k}={v}" for k, v in breakdown.items()))
-    dbg("final", "formula: " + " + ".join(formula_parts))
-    dbg("final", f"weighted_sum={weighted_sum:.2f} | weight_used={weight_used:.2f} | total={total}")
-    if weight_used < 1.0:
-        dbg("final", f"(renormalized: {weighted_sum:.2f} / {weight_used:.2f} = {total})")
+    dbg("final", f"per-question totals: {per_question_totals}")
+    dbg("final", f"speaking_score = mean({per_question_totals}) = {total}")
 
     # ---- Off-topic penalty: -15 points per off-topic question ----
     # Applied to the final score AFTER renormalization. The penalty is

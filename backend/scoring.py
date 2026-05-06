@@ -1,24 +1,42 @@
 """
-Scoring module.
+Scoring module — turns a submitted invitation into a Score row.
 
-Reading scoring is deterministic (count correct ÷ total) — runs immediately
-on submission, no API calls, free.
+Pipeline overview (called once from routes/submit.py once the candidate
+has submitted everything):
 
-Writing scoring delegates to writing_eval.score_writing(), which sends the
-candidate's essay + the assigned prompt to GPT-4o and gets back a rubric
-breakdown (Task Response / Grammar / Vocabulary / Coherence, each 0..25)
-plus a short feedback paragraph for HR. A stub fallback runs if the call
-can't import or fails.
+    score_invitation(inv, db)
+        ├── score_reading(inv, db)          # deterministic, no API calls
+        ├── _run_writing_eval(inv, db)      # GPT-4o on the essay
+        ├── _run_speaking_eval(inv, db)     # Whisper + Azure + GPT-4o on audio
+        ├── compute_total(...)              # weighted average of available sections
+        └── derive_rating(...)              # final hire/no-hire band
 
-Speaking scoring delegates to speaking_eval.score_speaking(), which runs:
-  Whisper (transcribe) -> Azure (pronunciation) -> GPT-4o (grammar/vocab)
-  + Python (confidence from filler/pause/restart signals).
-A stub fallback runs if the evaluator can't import or crashes.
+Each section can be excluded from a given invitation (HR picks at invite
+time which of reading/writing/speaking to include). Excluded sections
+return None scores. compute_total() then redistributes weights across
+whatever IS scored, so a 2-section test still produces a 0–100 total.
 
 Rating bands (applied to total_score 0-100):
-  - 75-100: recommended
-  - 60-74:  borderline
-  - 0-59:   not_recommended
+    - 75-100: recommended
+    - 60-74:  borderline
+    - 0-59:   not_recommended
+
+Conditional speaking floor (added 2026-05):
+    When speaking is a SIGNIFICANT share of the test (i.e. fewer than 3
+    sections were included), a speaking_score below 50 forces
+    "not_recommended" regardless of the weighted total. Rationale:
+        - 3-section test: speaking is 33% — a weak speaker who aced the
+          other two is still likely competent overall, don't auto-fail.
+        - 2-section test with speaking: speaking is 50% — a fail here
+          is structurally a much bigger problem, so the floor applies.
+        - Speaking-only test: speaking is 100% — floor obviously applies.
+
+Failure handling:
+    Each evaluator (writing, speaking) is wrapped in try/except. A single
+    bad invitation can't poison the whole submission flow — on failure
+    the evaluator returns a stub result with total=None and an error
+    message in the feedback field, and scoring continues for the other
+    sections.
 """
 
 import logging
@@ -32,8 +50,18 @@ log = logging.getLogger("scoring")
 # ------------------------------------------------------------------
 def score_reading(inv: Invitation, db: Session) -> tuple[int | None, int | None, int | None]:
     """
-    Compare each MCQAnswer's selected_option against the Question's correct_answer.
+    Score the reading section. Deterministic — no API calls, runs in milliseconds.
+
+    Compares each MCQAnswer's selected_option against the Question's correct_answer.
+
     Returns (score_0_to_100, num_correct, num_total).
+        - num_total is what was assigned, not what they answered. So unanswered
+          questions count against the candidate (12 right out of 15 = 80, not 100).
+        - score is rounded to nearest integer.
+
+    Concrete example:
+        Candidate was assigned 15 questions, answered 12 of them, got 10 right.
+        Returns (round(10/15 * 100), 10, 15) = (67, 10, 15).
 
     For invitations where HR excluded reading, returns (None, None, None) so
     compute_total() redistributes weight to only the included sections — and
@@ -148,7 +176,41 @@ def _run_speaking_eval(inv: Invitation, db: Session) -> dict:
 # ------------------------------------------------------------------
 # Combined score + rating
 # ------------------------------------------------------------------
-def derive_rating(total_score: int) -> str:
+def derive_rating(
+    total_score: int,
+    speaking_score: int | None = None,
+    sections_included: int = 3,
+) -> str:
+    """
+    Convert the weighted total into a hire/no-hire band.
+
+    Speaking floor (conditional): when speaking is a significant share of the
+    test, a sub-50 speaking score forces "not_recommended" regardless of how
+    strong the other sections were. The floor only fires when:
+
+      1. speaking was actually evaluated (speaking_score is not None), AND
+      2. speaking_score < 50, AND
+      3. fewer than 3 sections were included — i.e. speaking is at least 50%
+         of the candidate's total assessment.
+
+    Why the 3rd condition matters:
+      - Full 3-section test: speaking is 33%. A weak speaker who aced reading
+        and writing is still likely competent overall — don't auto-fail.
+      - 2-section test (speaking + reading OR speaking + writing): speaking
+        is 50% of the score. A failed speaking section is a much bigger
+        problem here, so the floor applies.
+      - Speaking-only test: speaking is 100%. Floor obviously applies.
+
+    The floor is also skipped when speaking_score is None, which happens when
+    HR excluded speaking entirely or speaking eval failed. In both cases the
+    rule has no signal to apply, so normal bands run.
+    """
+    if (
+        speaking_score is not None
+        and speaking_score < 50
+        and sections_included < 3
+    ):
+        return "not_recommended"
     if total_score >= 75:
         return "recommended"
     if total_score >= 60:
@@ -169,9 +231,22 @@ def compute_total(
     speaking_score: int | None,
 ) -> int:
     """
-    Weighted total: equal 33.33% weighting across reading, writing, and speaking.
-    If a section isn't scored yet (None), its weight is redistributed proportionally
-    across whatever IS scored, so the displayed total reflects the available data.
+    Combine the per-section scores into a single 0–100 number.
+
+    Default weights are equal (1/3 each), set in config.py. If a section
+    came back as None (HR excluded it, or eval failed), its weight is
+    redistributed proportionally across whatever IS scored. This way a
+    2-section test still produces a 0–100 total, not e.g. 0–67.
+
+    Concrete examples:
+        Full test, all scored: reading=80, writing=70, speaking=60
+            → (80×0.33 + 70×0.33 + 60×0.33) / 1.00 = 70
+
+        Reading + writing only (speaking excluded): reading=80, writing=70
+            → (80×0.33 + 70×0.33) / 0.66 = 75
+            The 0.33 speaking weight gets redistributed.
+
+        All None (no sections scored): returns 0 as a safe default.
     """
     pairs = []
     if reading_score is not None:
@@ -194,12 +269,26 @@ def compute_total(
 # ------------------------------------------------------------------
 def score_invitation(inv: Invitation, db: Session) -> Score:
     """
-    Compute reading + writing + speaking scores for this invitation, persist a Score row.
-    Reading is deterministic. Writing runs GPT-4o on the candidate's essay (or stub
-    fallback on failure). Speaking runs the Whisper + Azure + GPT-4o pipeline (or
-    stub fallback on failure).
-    Idempotent in the sense that calling twice creates two scores (don't do that);
-    the caller should ensure submitted_at is set first and only call once.
+    Top-level scoring entry point. Called once from routes/submit.py after
+    the candidate has submitted the test (submitted_at must be set first).
+
+    Runs all three section evaluators, computes the total, picks a rating,
+    and inserts a Score row. The caller is responsible for db.commit().
+
+    Pipeline:
+        1. score_reading()       → fast, deterministic, no API calls
+        2. _run_writing_eval()   → GPT-4o on essay (or stub on failure)
+        3. _run_speaking_eval()  → Whisper + Azure + GPT-4o (or stub)
+        4. compute_total()       → weighted average (None sections excluded)
+        5. derive_rating()       → applies bands + conditional <50 speaking floor
+
+    NOT idempotent — calling twice creates two Score rows. The caller MUST
+    ensure submitted_at is set first AND that this is only called once per
+    invitation. The submit route guarantees both.
+
+    AI feedback paragraphs from writing + speaking get joined into a single
+    `ai_feedback` field on the Score row, so HR sees one combined paragraph
+    in the dashboard rather than two separate ones.
     """
     reading_score, reading_correct, reading_total = score_reading(inv, db)
 
@@ -210,7 +299,18 @@ def score_invitation(inv: Invitation, db: Session) -> Score:
     speaking_total = speaking["total"]
 
     total_score = compute_total(reading_score, writing_total, speaking_total)
-    rating = derive_rating(total_score)
+    # Count how many sections were actually scored (None = excluded or failed).
+    # The conditional floor in derive_rating uses this to decide whether the
+    # <50 speaking rule should fire — it should NOT fire when all 3 sections
+    # are included (speaking is only 33% of the total in that case).
+    sections_included = sum(
+        1 for s in (reading_score, writing_total, speaking_total) if s is not None
+    )
+    rating = derive_rating(
+        total_score,
+        speaking_score=speaking_total,
+        sections_included=sections_included,
+    )
 
     # Combine the two pending-feedback notes into one paragraph for HR.
     feedback = "\n\n".join(filter(None, [writing["feedback"], speaking["feedback"]]))
