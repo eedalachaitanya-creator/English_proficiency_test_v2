@@ -59,8 +59,12 @@ from email_service import (
     send_regenerated_code_email,
     send_temp_password_email,
 )
-import secrets
-import string
+from password_reset import (
+    FORGOT_PASSWORD_GENERIC_RESPONSE,
+    is_recently_reset,
+    sleep_to_latency_floor,
+    generate_temp_password,
+)
 
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
@@ -285,76 +289,14 @@ def change_password(
     return {"status": "password_changed"}
 
 
-# Generic message returned for ALL outcomes of /forgot-password — even
-# unknown emails, admin emails, rate-limited retries, and SMTP failures.
-# Same string defended in test_forgot_password.py — keep them in sync.
-_FORGOT_PASSWORD_GENERIC_RESPONSE = {
-    "status": "ok",
-    "message": "If an account exists for that email, a temporary password has been sent.",
-}
-
-# Rate-limit + timing-floor configuration. Both defend against abuse of
-# the anonymous /forgot-password endpoint:
-#   - Cooldown: a single email can only trigger one reset every
-#     COOLDOWN seconds. Prevents email-bombing a victim and burning the
-#     SMTP relay's daily quota.
-#   - Latency floor: every request takes at least LATENCY_FLOOR seconds
-#     to respond, regardless of which branch (real HR / unknown email /
-#     admin / rate-limited / SMTP-failed) it falls into. Closes the
-#     timing oracle: without this, an attacker could distinguish "real
-#     HR email" (~1-2s for SMTP) from "unknown email" (<5ms) by simply
-#     timing the response.
-_FORGOT_PASSWORD_COOLDOWN_SECONDS = 60
-_FORGOT_PASSWORD_LATENCY_FLOOR_SECONDS = 1.2
-# In-memory map: email_lower → expires_at unix timestamp. In a multi-
-# worker uvicorn deploy each worker has its own dict, which weakens the
-# guarantee but doesn't break it (an attacker still hits the floor on
-# every request). For a hard guarantee move to Redis or the DB.
-_recent_resets: dict[str, float] = {}
-
-
-def _is_recently_reset(email_lower: str) -> bool:
-    """True if this email triggered a reset within the cooldown. Side
-    effect: stamps the email with a fresh expiry on the FIRST hit
-    (subsequent calls within the window all return True). Garbage-
-    collects expired entries lazily so the dict doesn't grow forever."""
-    now = time.time()
-    # Sweep expired keys (cheap — typically <100 items).
-    for k in [k for k, v in _recent_resets.items() if v < now]:
-        del _recent_resets[k]
-    expires = _recent_resets.get(email_lower)
-    if expires and now < expires:
-        return True
-    _recent_resets[email_lower] = now + _FORGOT_PASSWORD_COOLDOWN_SECONDS
-    return False
-
-
-def _sleep_to_latency_floor(started_at: float) -> None:
-    """Pad the response time so every code path takes at least
-    _FORGOT_PASSWORD_LATENCY_FLOOR_SECONDS. Sync sleep is fine — sync
-    routes run on the threadpool and don't block the event loop."""
-    elapsed = time.monotonic() - started_at
-    remaining = _FORGOT_PASSWORD_LATENCY_FLOOR_SECONDS - elapsed
-    if remaining > 0:
-        time.sleep(remaining)
-
-
-def _generate_temp_password(length: int = 12) -> str:
-    """Cryptographically random temp password. Mix of upper/lower/digits
-    (no special chars — easier to type from email; we trade a tiny bit
-    of entropy for fewer "weird-character" support tickets). 12 chars
-    of [A-Za-z0-9] = ~71 bits of entropy, well above brute-force range."""
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """
     Anonymous endpoint. ALWAYS returns 200 with the same generic
     message regardless of:
       - whether the email exists
-      - whether the email belongs to an admin (admins reset via CLI)
+      - whether the email belongs to an admin (admins reset via the
+        admin endpoint, not this one)
       - whether SMTP succeeded
       - whether the cooldown is active
 
@@ -378,10 +320,13 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
     # Per-email cooldown. Same generic 200 — don't tell the attacker
     # whether THEIR rate-limit is what blocked the request, or whether
-    # the email was just unknown.
-    if _is_recently_reset(email_lower):
-        _sleep_to_latency_floor(started_at)
-        return _FORGOT_PASSWORD_GENERIC_RESPONSE
+    # the email was just unknown. The dict is shared with the admin
+    # endpoint via password_reset, so an attacker can't bypass the
+    # cooldown by alternating between /api/hr/forgot-password and
+    # /api/admin/forgot-password.
+    if is_recently_reset(email_lower):
+        sleep_to_latency_floor(started_at)
+        return FORGOT_PASSWORD_GENERIC_RESPONSE
 
     hr = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
 
@@ -392,13 +337,13 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     # become a secondary timing oracle — combined with the latency
     # floor below, all paths now look identical from the outside.
     if hr is None or hr.role != "hr":
-        hash_password(_generate_temp_password())  # constant-time-ish padding
-        _sleep_to_latency_floor(started_at)
-        return _FORGOT_PASSWORD_GENERIC_RESPONSE
+        hash_password(generate_temp_password())  # constant-time-ish padding
+        sleep_to_latency_floor(started_at)
+        return FORGOT_PASSWORD_GENERIC_RESPONSE
 
     # Real HR — generate the temp password and try to email it BEFORE
     # writing. If SMTP fails the user keeps their existing password.
-    temp_password = _generate_temp_password()
+    temp_password = generate_temp_password()
     email_ok, _email_err = send_temp_password_email(
         hr_email=hr.email,
         hr_name=hr.name,
@@ -406,8 +351,8 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         temp_password=temp_password,
     )
     if not email_ok:
-        _sleep_to_latency_floor(started_at)
-        return _FORGOT_PASSWORD_GENERIC_RESPONSE
+        sleep_to_latency_floor(started_at)
+        return FORGOT_PASSWORD_GENERIC_RESPONSE
 
     # Email sent — now commit the password rotation. Wrapped in
     # try/except because if the commit fails AFTER the email went out,
@@ -426,8 +371,8 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
             "was sent for hr_id=%s — user may be locked out, ops should "
             "investigate.", hr.id
         )
-    _sleep_to_latency_floor(started_at)
-    return _FORGOT_PASSWORD_GENERIC_RESPONSE
+    sleep_to_latency_floor(started_at)
+    return FORGOT_PASSWORD_GENERIC_RESPONSE
 
 
 @router.get("/session-status")

@@ -213,12 +213,12 @@ def test_forgot_password_invalid_email_format_rejected():
 
 def test_forgot_password_cooldown_blocks_rapid_retry():
     """Per-email cooldown: a second reset for the same email within
-    _FORGOT_PASSWORD_COOLDOWN_SECONDS must NOT trigger SMTP. Returns
+    password_reset.RESET_COOLDOWN_SECONDS must NOT trigger SMTP. Returns
     the same generic 200 (don't tell the attacker the rate-limit hit).
     """
     # Reset the in-memory cooldown so prior tests don't pollute.
-    from routes.hr import _recent_resets
-    _recent_resets.clear()
+    from password_reset import recent_resets
+    recent_resets.clear()
 
     hr = _make_hr(password="originalPass1")
     sent = []
@@ -247,7 +247,7 @@ def test_forgot_password_cooldown_blocks_rapid_retry():
             assert _hash_for(hr.id) == hash_after_first, "hash must not change on cooldown'd retry"
     finally:
         _drop(hr.id)
-        _recent_resets.clear()
+        recent_resets.clear()
 
 
 def test_forgot_password_db_commit_failure_does_not_lock_user_out():
@@ -255,8 +255,8 @@ def test_forgot_password_db_commit_failure_does_not_lock_user_out():
     and return generic 200 — but the user's existing password must
     still work (no lockout). Without try/except the route would 500
     AND the rollback would leave the row inconsistent."""
-    from routes.hr import _recent_resets
-    _recent_resets.clear()
+    from password_reset import recent_resets
+    recent_resets.clear()
 
     hr = _make_hr(password="originalPass1")
     original_hash = _hash_for(hr.id)
@@ -288,7 +288,7 @@ def test_forgot_password_db_commit_failure_does_not_lock_user_out():
         assert _hash_for(hr.id) == original_hash
     finally:
         _drop(hr.id)
-        _recent_resets.clear()
+        recent_resets.clear()
 
 
 def test_forgot_password_invalidates_existing_sessions():
