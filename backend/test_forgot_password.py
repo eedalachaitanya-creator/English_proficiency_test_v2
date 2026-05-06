@@ -114,6 +114,42 @@ def test_forgot_password_happy_path_replaces_password():
         _drop(hr.id)
 
 
+def test_forgot_password_sets_must_change_password_flag():
+    """A successful HR reset must mark the user as needing to change
+    their password before the rest of the app becomes usable. The
+    frontend route guard + backend strict-auth dep both consult this
+    flag — without it, the temp password emailed to the user would
+    let them keep using the app indefinitely."""
+    from password_reset import recent_resets
+    recent_resets.clear()
+
+    hr = _make_hr(password="originalPass1")
+    try:
+        # Sanity-check the starting state — fresh row should not have
+        # the flag set.
+        db = SessionLocal()
+        before = db.query(HRAdmin).filter(HRAdmin.id == hr.id).first()
+        assert before.must_change_password is False
+        db.close()
+
+        with patch("routes.hr.send_temp_password_email", return_value=(True, None)):
+            c = TestClient(app)
+            r = c.post("/api/hr/forgot-password", json={"email": hr.email})
+            assert r.status_code == 200, r.text
+            assert r.json()["message"] == _GENERIC_MESSAGE
+
+        db = SessionLocal()
+        after = db.query(HRAdmin).filter(HRAdmin.id == hr.id).first()
+        db.close()
+        assert after.must_change_password is True, (
+            "must_change_password must be set TRUE after a successful reset; "
+            "without this, the forced-change UI never engages."
+        )
+    finally:
+        _drop(hr.id)
+        recent_resets.clear()
+
+
 # ----------------------------------------------------------------------
 # Email enumeration defenses — same response in every "no send" case
 # ----------------------------------------------------------------------

@@ -312,8 +312,11 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     because we couldn't send an email or persist the change would be
     worse than not resetting.
 
-    Successful resets bump password_changed_at, invalidating any other
-    live session via the pw_v check in _resolve_user_with_role.
+    Successful resets bump password_changed_at (invalidates other live
+    sessions via the pw_v check in _resolve_user_with_role) AND set
+    must_change_password=True (locks the UI to /change-password-required
+    until the user picks a permanent password — see the strict auth dep
+    in auth.py and the route guard in the frontend).
     """
     started_at = time.monotonic()
     email_lower = payload.email.lower()
@@ -362,6 +365,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     # response and can try again after the cooldown.
     hr.password_hash = hash_password(temp_password)
     hr.password_changed_at = _utcnow_naive()
+    hr.must_change_password = True
     try:
         db.commit()
     except SQLAlchemyError:
