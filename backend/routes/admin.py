@@ -6,24 +6,36 @@ to the candidate dashboard, content authoring, or any HR-facing endpoint
 — see docs/superpowers/specs/2026-05-04-admin-portal-design.md for the
 strict-separation rationale.
 
-Every route except /login is protected by `Depends(require_admin)`. The
-session cookie is the same one HR uses (key: `hr_admin_id`); role
-enforcement happens inside the dependency.
+Every route except /login and /forgot-password is protected by
+`Depends(require_admin)`. The session cookie is the same one HR uses
+(key: `hr_admin_id`); role enforcement happens inside the dependency.
 """
+import logging
 import os
+import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from auth import hash_password, require_admin, verify_password
 from database import get_db
+from email_service import send_temp_password_email
 from models import HRAdmin
+from password_reset import (
+    FORGOT_PASSWORD_GENERIC_RESPONSE,
+    is_recently_reset,
+    sleep_to_latency_floor,
+    generate_temp_password,
+)
 from schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
     HRCreateByAdminRequest,
     HRCreateByAdminResponse,
     HRSummary,
@@ -35,6 +47,8 @@ from jwt_service import (
     decode_token,
     InvalidTokenError,
 )
+
+log = logging.getLogger("admin.forgot_password")
 
 
 # Read APP_BASE_URL at module load — same pattern as routes/hr.py to avoid
@@ -171,6 +185,83 @@ def change_password(
     db.refresh(admin)
     request.session["pw_v"] = admin.password_changed_at.isoformat()
     return {"status": "password_changed"}
+
+
+@router.post("/forgot-password")
+def admin_forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Anonymous endpoint. Mirror of /api/hr/forgot-password but only
+    rotates accounts whose role == 'admin'. ALWAYS returns 200 with the
+    same generic message regardless of:
+      - whether the email exists
+      - whether the email belongs to an HR (HR resets via /api/hr/...)
+      - whether SMTP succeeded
+      - whether the cooldown is active
+
+    Why: prevents enumeration of valid admin emails. The cooldown +
+    latency floor close two abuse vectors:
+      - Spam-a-victim (1 reset per email per minute)
+      - Timing oracle (every response takes ~1.2s minimum)
+
+    Cross-role isolation: an HR email submitted here goes down the
+    same constant-time fake-hash path as an unknown email. The
+    rate-limit dict is shared with the HR endpoint via password_reset
+    so an attacker can't bypass the cooldown by alternating endpoints.
+
+    Atomicity: the password_hash is only updated AFTER the email send
+    succeeds. If SMTP fails the user keeps their existing password.
+
+    Successful resets bump password_changed_at (invalidates other live
+    sessions) AND set must_change_password=True (locks the UI to
+    /change-password-required until a permanent password is set).
+    """
+    started_at = time.monotonic()
+    email_lower = payload.email.lower()
+
+    if is_recently_reset(email_lower):
+        sleep_to_latency_floor(started_at)
+        return FORGOT_PASSWORD_GENERIC_RESPONSE
+
+    user = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
+
+    if user is None or user.role != "admin":
+        # Same constant-time padding path the HR endpoint uses — without
+        # this, the bcrypt latency on the real-admin branch would be a
+        # secondary timing oracle on top of the latency floor.
+        hash_password(generate_temp_password())
+        sleep_to_latency_floor(started_at)
+        return FORGOT_PASSWORD_GENERIC_RESPONSE
+
+    temp_password = generate_temp_password()
+    email_ok, _email_err = send_temp_password_email(
+        hr_email=user.email,
+        hr_name=user.name,
+        login_url=f"{APP_BASE_URL}/login",
+        temp_password=temp_password,
+    )
+    if not email_ok:
+        sleep_to_latency_floor(started_at)
+        return FORGOT_PASSWORD_GENERIC_RESPONSE
+
+    # Email sent — commit the rotation. Wrapped in try/except for the
+    # same reason as routes/hr.py: if the commit fails AFTER the email
+    # went out, the user is holding new credentials that don't work.
+    # Log loudly; the user just gets the generic response and can retry
+    # after the cooldown.
+    user.password_hash = hash_password(temp_password)
+    user.password_changed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    user.must_change_password = True
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception(
+            "[admin-forgot-password] DB commit failed AFTER temp-password email "
+            "was sent for admin_id=%s — user may be locked out, ops should "
+            "investigate.", user.id
+        )
+    sleep_to_latency_floor(started_at)
+    return FORGOT_PASSWORD_GENERIC_RESPONSE
 
 
 @router.get("/session-status")
