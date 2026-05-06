@@ -279,6 +279,13 @@ class InvitationDetails(BaseModel):
     code_locked: bool = False
     failed_code_attempts: int = 0
 
+    # IANA timezone the original invitation was scheduled in. The
+    # candidate-detail page uses this to pre-fill the timezone dropdown
+    # in the resend-invitation modal so HR doesn't have to repick it
+    # for the same candidate. Older rows that pre-date the column
+    # default to "UTC" via the model column default.
+    display_timezone: str = "UTC"
+
 
 class ResendEmailRequest(BaseModel):
     """

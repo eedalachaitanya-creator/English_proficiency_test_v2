@@ -796,6 +796,7 @@ def invitation_details(
         email_error=inv.email_error,
         code_locked=inv.code_locked,
         failed_code_attempts=inv.failed_code_attempts,
+        display_timezone=inv.display_timezone,
     )
 
 
