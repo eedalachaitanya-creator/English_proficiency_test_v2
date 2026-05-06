@@ -30,7 +30,7 @@ from database import get_db
 from models import (
     HRAdmin, Passage, Question, SpeakingTopic, WritingTopic, Invitation
 )
-from routes.hr import require_hr  # reuse the session-based HR auth dependency
+from auth import require_hr_strict  # strict HR auth — blocks must_change_password=True; HR content authoring is NOT on the allow-list
 import schemas
 
 
@@ -166,7 +166,7 @@ def _check_writing_topic_in_use(db: Session, topic_id: int) -> None:
 def list_passages(
     difficulty: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     q = db.query(Passage).filter(Passage.deleted_at.is_(None)).order_by(Passage.id.desc())
     if difficulty:
@@ -179,7 +179,7 @@ def list_passages(
 def create_passage(
     payload: schemas.PassageCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     _validate_difficulty(payload.difficulty)
     if not payload.title.strip():
@@ -205,7 +205,7 @@ def update_passage(
     passage_id: int,
     payload: schemas.PassageUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     passage = db.query(Passage).filter(Passage.id == passage_id).first()
     if not passage:
@@ -235,7 +235,7 @@ def update_passage(
 def delete_passage(
     passage_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Soft delete — sets deleted_at timestamp. Hidden from HR list afterward.
     Existing invitations are unaffected because they snapshot assigned IDs
@@ -256,7 +256,7 @@ def delete_passage(
 def toggle_passage_disabled(
     passage_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Toggle disabled state. NULL → set to now (disabled). Non-NULL → set
     to NULL (re-enabled). New invitations skip disabled items; existing
@@ -277,7 +277,7 @@ def toggle_passage_disabled(
 async def bulk_import_passages(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """
     Bulk-import passages from CSV. Expected columns:
@@ -335,7 +335,7 @@ def list_questions(
     difficulty: Optional[str] = Query(None),
     passage_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     q = db.query(Question).filter(Question.deleted_at.is_(None)).order_by(Question.id.desc())
     if type:
@@ -353,7 +353,7 @@ def list_questions(
 def create_question(
     payload: schemas.QuestionCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     _validate_difficulty(payload.difficulty)
     _validate_question_type(payload.question_type)
@@ -396,7 +396,7 @@ def update_question(
     question_id: int,
     payload: schemas.QuestionUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
@@ -425,7 +425,7 @@ def update_question(
 def delete_question(
     question_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Soft delete — see delete_passage for rationale."""
     question = db.query(Question).filter(
@@ -443,7 +443,7 @@ def delete_question(
 def toggle_question_disabled(
     question_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Toggle disabled state. See toggle_passage_disabled for rationale."""
     question = db.query(Question).filter(
@@ -462,7 +462,7 @@ def toggle_question_disabled(
 async def bulk_import_questions(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """
     Bulk-import standalone (non-reading_comp) questions from CSV.
@@ -541,7 +541,7 @@ async def bulk_import_questions(
 def list_writing_topics(
     difficulty: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     q = db.query(WritingTopic).filter(WritingTopic.deleted_at.is_(None)).order_by(WritingTopic.id.desc())
     if difficulty:
@@ -554,7 +554,7 @@ def list_writing_topics(
 def create_writing_topic(
     payload: schemas.WritingTopicCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     _validate_difficulty(payload.difficulty)
     if not payload.prompt_text.strip():
@@ -582,7 +582,7 @@ def update_writing_topic(
     topic_id: int,
     payload: schemas.WritingTopicUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     topic = db.query(WritingTopic).filter(WritingTopic.id == topic_id).first()
     if not topic:
@@ -614,7 +614,7 @@ def update_writing_topic(
 def delete_writing_topic(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Soft delete — see delete_passage for rationale."""
     topic = db.query(WritingTopic).filter(
@@ -632,7 +632,7 @@ def delete_writing_topic(
 def toggle_writing_topic_disabled(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Toggle disabled state. See toggle_passage_disabled for rationale."""
     topic = db.query(WritingTopic).filter(
@@ -651,7 +651,7 @@ def toggle_writing_topic_disabled(
 async def bulk_import_writing_topics(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """
     Bulk-import writing topics. CSV columns:
@@ -712,7 +712,7 @@ async def bulk_import_writing_topics(
 def list_speaking_topics(
     difficulty: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     q = db.query(SpeakingTopic).filter(SpeakingTopic.deleted_at.is_(None)).order_by(SpeakingTopic.id.desc())
     if difficulty:
@@ -725,7 +725,7 @@ def list_speaking_topics(
 def create_speaking_topic(
     payload: schemas.SpeakingTopicCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     _validate_difficulty(payload.difficulty)
     if not payload.prompt_text.strip():
@@ -747,7 +747,7 @@ def update_speaking_topic(
     topic_id: int,
     payload: schemas.SpeakingTopicUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     topic = db.query(SpeakingTopic).filter(SpeakingTopic.id == topic_id).first()
     if not topic:
@@ -772,7 +772,7 @@ def update_speaking_topic(
 def delete_speaking_topic(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Soft delete — see delete_passage for rationale."""
     topic = db.query(SpeakingTopic).filter(
@@ -790,7 +790,7 @@ def delete_speaking_topic(
 def toggle_speaking_topic_disabled(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
 ):
     """Toggle disabled state. See toggle_passage_disabled for rationale."""
     topic = db.query(SpeakingTopic).filter(

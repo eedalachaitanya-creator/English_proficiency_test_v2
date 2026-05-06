@@ -2,9 +2,16 @@
 HR-facing routes.
 
 All routes here mounted under /api/hr/* via the prefix on the APIRouter.
-Every route except /login is protected by `Depends(require_hr)` —
-that dependency reads the session cookie and returns the HRAdmin row,
-or raises 401 if no valid session.
+Every authenticated route is protected by one of two deps:
+  - `Depends(require_hr)` — allow-list (/me, /change-password). Lets a
+    user with must_change_password=True through, since these are the
+    routes the user must be able to call to clear the flag.
+  - `Depends(require_hr_strict)` — everything else. Wraps require_hr
+    and additionally returns 403 with code='must_change_password'
+    when the flag is set. See auth._check_must_change_password.
+
+/login, /forgot-password, /refresh, and /logout are anonymous (no auth
+dep) — they don't need either gate.
 
 Multi-tenancy guarantee: results endpoints filter by hr_admin_id so
 HR-A can never see HR-B's candidates, even by guessing IDs.
@@ -44,7 +51,8 @@ from auth import (
     verify_password,
     generate_token,
     generate_access_code,
-    require_hr,
+    require_hr,           # allow-list: /me, /change-password
+    require_hr_strict,    # everything else — blocks must_change_password=True
 )
 
 from jwt_service import (
@@ -479,7 +487,7 @@ def _resolve_timezone_for_email(db: Session, iana_name: str) -> tuple[str, str |
 
 @router.get("/timezones", response_model=list[SupportedTimezoneOut])
 def list_timezones(
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
@@ -518,7 +526,7 @@ def list_timezones(
 @router.post("/invite", response_model=InviteCreateResponse)
 def create_invite(
     payload: InviteCreateRequest,
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
@@ -654,7 +662,7 @@ def create_invite(
 @router.post("/invite/{invitation_id}/regenerate-code", response_model=InviteCreateResponse)
 def regenerate_code(
     invitation_id: int,
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
@@ -742,7 +750,7 @@ def regenerate_code(
 @router.get("/invitation/{invitation_id}/details", response_model=InvitationDetails)
 def invitation_details(
     invitation_id: int,
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
@@ -786,7 +794,7 @@ def invitation_details(
 @router.post("/invite/{invitation_id}/resend-email", response_model=ResendEmailResponse)
 def resend_invitation_email(
     invitation_id: int,
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
@@ -859,7 +867,7 @@ def resend_invitation_email(
 # Results
 # ------------------------------------------------------------------
 @router.get("/results", response_model=list[ScoreSummary])
-def list_results(hr: HRAdmin = Depends(require_hr), db: Session = Depends(get_db)):
+def list_results(hr: HRAdmin = Depends(require_hr_strict), db: Session = Depends(get_db)):
     """
     All invitations sent by this HR, newest first. Score fields are None
     until the candidate submits and Day 2 scoring fills them in.
@@ -903,7 +911,7 @@ def list_results(hr: HRAdmin = Depends(require_hr), db: Session = Depends(get_db
 @router.get("/results/{invitation_id}", response_model=ScoreDetail)
 def result_detail(
     invitation_id: int,
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
@@ -989,7 +997,7 @@ def result_detail(
 @router.get("/audio/{audio_recording_id}")
 def get_audio(
     audio_recording_id: int,
-    hr: HRAdmin = Depends(require_hr),
+    hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """

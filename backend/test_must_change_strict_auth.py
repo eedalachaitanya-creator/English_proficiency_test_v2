@@ -156,3 +156,75 @@ def test_require_admin_still_allows_when_must_change(admin_user, db_session):
     result = require_admin(request, db_session)
     assert result.id == admin_user.id
     assert result.must_change_password is True
+
+
+# ----------------------------------------------------------------------
+# Integration: real routes return 403 when the flag is set
+# ----------------------------------------------------------------------
+
+def test_real_hr_route_returns_403_when_must_change(hr_user, db_session):
+    """End-to-end check that a real (strict-protected) HR route blocks
+    a session whose user has must_change_password=True. /api/hr/results
+    is the canary — it's a typical HR endpoint not on the allow-list.
+
+    Asserts the response shape too: 403 with body
+    {"detail": {"code": "must_change_password", "message": ...}}.
+    The frontend interceptor reads detail.code to detect this state."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    # Seed the user with the flag set.
+    hr_user.must_change_password = True
+    db_session.commit()
+
+    # Log in to get a session cookie. The flag does NOT block /login —
+    # /login is anonymous.
+    c = TestClient(app)
+    r = c.post("/api/hr/login", json={"email": hr_user.email, "password": "testpass123"})
+    assert r.status_code == 200, r.text
+    assert r.json()["must_change_password"] is True
+
+    # Now hit a strict-protected route — must be blocked.
+    r2 = c.get("/api/hr/results")
+    assert r2.status_code == 403, r2.text
+    body = r2.json()
+    # FastAPI wraps HTTPException(detail=dict) into top-level "detail".
+    assert "detail" in body
+    assert body["detail"].get("code") == "must_change_password"
+
+
+def test_real_hr_me_route_still_works_when_must_change(hr_user, db_session):
+    """The allow-list route /api/hr/me MUST still return 200 even when
+    must_change_password=True — otherwise the frontend can't load
+    enough state to render the change-password screen."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    hr_user.must_change_password = True
+    db_session.commit()
+
+    c = TestClient(app)
+    r = c.post("/api/hr/login", json={"email": hr_user.email, "password": "testpass123"})
+    assert r.status_code == 200
+
+    me = c.get("/api/hr/me")
+    assert me.status_code == 200, me.text
+    assert me.json()["must_change_password"] is True
+
+
+def test_real_admin_route_returns_403_when_must_change(admin_user, db_session):
+    """End-to-end: a typical admin-portal route (/api/admin/hrs) must
+    block a session whose admin has must_change_password=True."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    admin_user.must_change_password = True
+    db_session.commit()
+
+    c = TestClient(app)
+    r = c.post("/api/admin/login", json={"email": admin_user.email, "password": "testpass123"})
+    assert r.status_code == 200
+
+    r2 = c.get("/api/admin/hrs")
+    assert r2.status_code == 403, r2.text
+    assert r2.json()["detail"].get("code") == "must_change_password"

@@ -6,9 +6,15 @@ to the candidate dashboard, content authoring, or any HR-facing endpoint
 — see docs/superpowers/specs/2026-05-04-admin-portal-design.md for the
 strict-separation rationale.
 
-Every route except /login and /forgot-password is protected by
-`Depends(require_admin)`. The session cookie is the same one HR uses
-(key: `hr_admin_id`); role enforcement happens inside the dependency.
+Authenticated routes use one of two deps:
+  - `Depends(require_admin)` — allow-list (/me, /change-password). Lets
+    a user with must_change_password=True through.
+  - `Depends(require_admin_strict)` — everything else (HR list/create).
+    403s with code='must_change_password' when the flag is set.
+
+/login, /forgot-password, /refresh, /logout, and /session-status are
+anonymous. The session cookie is the same one HR uses (key:
+`hr_admin_id`); role enforcement happens inside the dependency.
 """
 import logging
 import os
@@ -19,7 +25,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from auth import hash_password, require_admin, verify_password
+from auth import (
+    hash_password,
+    require_admin,           # allow-list: /me, /change-password
+    require_admin_strict,    # everything else — blocks must_change_password=True
+    verify_password,
+)
 from database import get_db
 from email_service import send_temp_password_email
 from models import HRAdmin
@@ -311,7 +322,7 @@ def session_status(request: Request, db: Session = Depends(get_db)):
 # HR account management
 # ------------------------------------------------------------------
 @router.get("/hrs", response_model=list[HRSummary])
-def list_hrs(_admin: HRAdmin = Depends(require_admin), db: Session = Depends(get_db)):
+def list_hrs(_admin: HRAdmin = Depends(require_admin_strict), db: Session = Depends(get_db)):
     """
     All HR accounts, newest first. Excludes admin accounts — admins
     manage HRs, not other admins (admin creation is CLI-only).
@@ -331,7 +342,7 @@ def list_hrs(_admin: HRAdmin = Depends(require_admin), db: Session = Depends(get
 @router.post("/hrs", response_model=HRCreateByAdminResponse, status_code=201)
 def create_hr(
     payload: HRCreateByAdminRequest,
-    _admin: HRAdmin = Depends(require_admin),
+    _admin: HRAdmin = Depends(require_admin_strict),
     db: Session = Depends(get_db),
 ):
     """
