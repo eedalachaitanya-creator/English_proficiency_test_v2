@@ -34,8 +34,11 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from dotenv import load_dotenv
 from jose import jwt, JWTError
 from jose.exceptions import ExpiredSignatureError
+
+load_dotenv()
 
 
 # ---------------- Config (read once at import time) ----------------

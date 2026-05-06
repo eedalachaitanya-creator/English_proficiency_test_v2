@@ -468,6 +468,8 @@ class PassageOut(BaseModel):
     difficulty: str
     topic: Optional[str] = None
     word_count: int
+    disabled_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -498,6 +500,8 @@ class QuestionOut(BaseModel):
     options: list[str]
     correct_answer: int
     passage_id: Optional[int] = None
+    disabled_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -533,6 +537,8 @@ class WritingTopicOut(BaseModel):
     min_words: int
     max_words: int
     category: Optional[str] = None
+    disabled_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -560,6 +566,8 @@ class SpeakingTopicOut(BaseModel):
     prompt_text: str
     difficulty: str
     category: Optional[str] = None
+    disabled_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
