@@ -297,6 +297,20 @@ def send_temp_password_email(
         f"This is an automated email. Do not forward your password to anyone."
     )
 
+    # HTML alternative — rendered by Gmail web, Outlook desktop, Apple
+    # Mail, etc. Plain-text version above is the fallback for clients
+    # that don't render HTML or for users who prefer it. Same content
+    # both ways; only the visual treatment differs.
+    msg.add_alternative(
+        _temp_password_html_body(
+            hr_name=hr_name,
+            hr_email=hr_email,
+            login_url=login_url,
+            temp_password=temp_password,
+        ),
+        subtype="html",
+    )
+
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
             context = ssl.create_default_context(cafile=certifi.where())
@@ -313,6 +327,114 @@ def send_temp_password_email(
         err = f"{type(e).__name__}: {str(e)[:150]}"
         print(f"[smtp] FAILED to send forgot-password to {hr_email}: {err}")
         return (False, err)
+
+
+def _temp_password_html_body(
+    *,
+    hr_name: str,
+    hr_email: str,
+    login_url: str,
+    temp_password: str,
+) -> str:
+    """
+    HTML body for the forgot-password email. Mirrors the visual
+    language of the invitation email's _html_body — same navy header
+    band, same white card layout, same CTA button shape — so a user
+    who has seen one email instantly recognizes the other as part of
+    the same product.
+
+    Email-client-safe: inline styles only, no external stylesheets,
+    no JS, fixed max-width 600px. Verified by the existing
+    _html_body to render in Gmail web, Outlook desktop, Apple Mail,
+    and Outlook mobile.
+    """
+    return f"""\
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:24px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;background:#f3f4f6;line-height:1.6;">
+    <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+
+      <!-- Header band -->
+      <div style="background:#1e3a8a;padding:24px 32px;color:#ffffff;">
+        <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">Password Reset</h1>
+        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">English Proficiency Test &middot; Stixis HR</p>
+      </div>
+
+      <!-- Body card -->
+      <div style="padding:32px;">
+
+        <p style="margin:0 0 16px 0;font-size:16px;color:#111827;">Dear {hr_name},</p>
+        <p style="margin:0 0 28px 0;font-size:15px;color:#374151;">
+          You (or someone using your email) requested a password reset for your
+          English Proficiency Test HR account. Use the temporary password below
+          to log in, then change it from your account menu right away.
+        </p>
+
+        <!-- Credentials block -->
+        <div style="margin:0 0 28px 0;background:#f9fafb;border:1px solid #e5e7eb;border-left:4px solid #1e3a8a;border-radius:6px;padding:18px 20px;">
+          <p style="margin:0 0 10px 0;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Your temporary credentials</p>
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;">
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;width:90px;vertical-align:top;">Email</td>
+              <td style="padding:6px 0;font-size:14px;color:#111827;font-weight:600;word-break:break-all;">{hr_email}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;vertical-align:top;">Password</td>
+              <td style="padding:6px 0;">
+                <span style="display:inline-block;background:#ffffff;border:1px solid #d1d5db;border-radius:4px;padding:6px 10px;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:14px;color:#111827;letter-spacing:0.5px;">{temp_password}</span>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- CTA button -->
+        <div style="margin:0 0 16px 0;text-align:center;">
+          <a href="{login_url}"
+             style="display:inline-block;background:#1e3a8a;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:6px;font-size:16px;font-weight:600;letter-spacing:0.2px;">
+            Log In &rarr;
+          </a>
+        </div>
+
+        <!-- Fallback link in case the button is stripped -->
+        <p style="margin:0 0 28px 0;font-size:12px;color:#6b7280;text-align:center;">
+          Button not working? Copy this link:<br>
+          <a href="{login_url}" style="color:#1e3a8a;word-break:break-all;">{login_url}</a>
+        </p>
+
+        <!-- After-login instruction -->
+        <div style="margin:0 0 24px 0;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:14px 18px;">
+          <p style="margin:0;font-size:13px;color:#1e40af;line-height:1.55;">
+            <strong>Once you log in:</strong> click your account avatar in the top-right
+            corner and choose <strong>Change password</strong> to set a new password
+            you'll remember.
+          </p>
+        </div>
+
+        <!-- Security warning -->
+        <div style="margin:0 0 24px 0;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:14px 18px;">
+          <p style="margin:0 0 6px 0;font-size:13px;color:#991b1b;font-weight:600;">If you did NOT request this reset</p>
+          <p style="margin:0;font-size:13px;color:#7f1d1d;line-height:1.55;">
+            Your account may have been targeted. Reply to this email so we can
+            investigate. Your old password no longer works &mdash; anyone with this
+            email can now log in, so treat the contents as sensitive.
+          </p>
+        </div>
+
+        <!-- Signature -->
+        <p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>
+        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">Stixis HR Team</p>
+
+      </div>
+
+      <!-- Footer disclaimer -->
+      <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
+        <p style="margin:0;font-size:11px;color:#9ca3af;text-align:center;line-height:1.5;">
+          This is an automated email. Do not forward your password to anyone.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>"""
 
 
 def send_hr_welcome_email(
