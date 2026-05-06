@@ -19,16 +19,21 @@ class HRLoginRequest(BaseModel):
 
 
 class HRLoginResponse(BaseModel):
+    """Returned by /api/hr/login (full token pair) AND /api/hr/me
+    (identity only — no tokens). The token fields are Optional so /me
+    doesn't have to mint fresh credentials just to satisfy the schema.
+
+    Mirrors AdminLoginResponse for consistency."""
     id: int
     name: str
     email: EmailStr
-    # JWT tokens added to login response. Frontend stores these in
-    # localStorage and sends Authorization: Bearer <access_token>
-    # on every API call. Refresh exchanged at /api/hr/refresh.
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    expires_in: int  # access_token lifetime in seconds
+    # JWT tokens. Populated on /login; None on /me — /me is an identity
+    # check, not a credential issuance, so it shouldn't be minting new
+    # tokens server-side just to fit the response shape.
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = "bearer"
+    expires_in: int | None = None
 
 
 class RefreshTokenRequest(BaseModel):
