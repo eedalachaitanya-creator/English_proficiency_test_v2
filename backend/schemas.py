@@ -124,12 +124,16 @@ class AdminRefreshTokenResponse(BaseModel):
     expires_in: int
 
 
-class HRSummary(BaseModel):
-    """One row in GET /api/admin/hrs. The admin doesn't need invitation
-    counts or other heavy aggregates here — keep this lean for the table."""
+class AdminUserSummary(BaseModel):
+    """One row in GET /api/admin/users — the admin dashboard's top-level
+    table. Lists every row in hr_admins (both roles) with a count of how
+    many invitations they've sent. Admins always have candidate_count=0
+    since they can't create invitations."""
     id: int
     name: str
     email: EmailStr
+    role: str  # "hr" or "admin" — same allowed values as HRAdmin.role
+    candidate_count: int  # 0 for admins; total invitations sent for HRs
     created_at: datetime
 
 
@@ -404,6 +408,17 @@ class ScoreSummary(BaseModel):
     #   "failed"  — SMTP send failed; HR action needed (see email_error)
     email_status: str = "pending"
     email_error: Optional[str] = None    # short reason if email_status == "failed"
+
+
+class PaginatedScoreSummary(BaseModel):
+    """Wrapper used by GET /api/admin/hrs/{hr_id}/candidates so an admin
+    looking at a busy HR doesn't ship hundreds of rows at once. The
+    backend slices via SQL LIMIT/OFFSET; the client renders one page at
+    a time and re-requests for prev/next."""
+    items: list[ScoreSummary]
+    total: int      # total candidates for this HR (across all pages)
+    page: int       # 1-indexed page being returned
+    page_size: int  # actual page size after server-side cap
 
 
 class AudioRecordingPublic(BaseModel):

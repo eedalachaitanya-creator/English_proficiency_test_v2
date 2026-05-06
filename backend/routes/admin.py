@@ -45,11 +45,13 @@ from schemas import (
     AdminLoginResponse,
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
+    AdminUserSummary,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     HRCreateByAdminRequest,
     HRCreateByAdminResponse,
-    HRSummary,
+    PaginatedScoreSummary,
+    ScoreSummary,
 )
 
 from jwt_service import (
@@ -324,24 +326,137 @@ def session_status(request: Request, db: Session = Depends(get_db)):
 
 
 # ------------------------------------------------------------------
-# HR account management
+# User management
 # ------------------------------------------------------------------
-@router.get("/hrs", response_model=list[HRSummary])
-def list_hrs(_admin: HRAdmin = Depends(require_admin_strict), db: Session = Depends(get_db)):
+@router.get("/users", response_model=list[AdminUserSummary])
+def list_users(_admin: HRAdmin = Depends(require_admin_strict), db: Session = Depends(get_db)):
     """
-    All HR accounts, newest first. Excludes admin accounts — admins
-    manage HRs, not other admins (admin creation is CLI-only).
+    Every row in hr_admins (both 'hr' and 'admin' roles), newest first,
+    each annotated with how many invitations they've sent. Admins
+    always have count=0 (they can't create invitations); HRs get an
+    accurate aggregate via a single LEFT JOIN with a COUNT subquery —
+    no per-row N+1 lookups.
     """
+    # Aggregate invitation counts per HR in a single grouped subquery.
+    # Imported lazily to avoid pulling Invitation/SQLAlchemy func into
+    # the module top-level just for this one endpoint.
+    from sqlalchemy import func
+    from models import Invitation
+    invite_counts = (
+        db.query(
+            Invitation.hr_admin_id.label("hr_admin_id"),
+            func.count(Invitation.id).label("count"),
+        )
+        .group_by(Invitation.hr_admin_id)
+        .subquery()
+    )
+
     rows = (
-        db.query(HRAdmin)
-        .filter(HRAdmin.role == "hr")
+        db.query(HRAdmin, invite_counts.c.count)
+        .outerjoin(invite_counts, HRAdmin.id == invite_counts.c.hr_admin_id)
         .order_by(HRAdmin.created_at.desc())
         .all()
     )
     return [
-        HRSummary(id=r.id, name=r.name, email=r.email, created_at=r.created_at)
-        for r in rows
+        AdminUserSummary(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            role=user.role,
+            # COALESCE the NULL from the LEFT JOIN to 0 — happens for
+            # every admin (no invitations) and for HRs who haven't sent
+            # any yet.
+            candidate_count=count or 0,
+            created_at=user.created_at,
+        )
+        for user, count in rows
     ]
+
+
+@router.get("/hrs/{hr_id}/candidates", response_model=PaginatedScoreSummary)
+def list_hr_candidates(
+    hr_id: int,
+    page: int = 1,
+    page_size: int = 25,
+    _admin: HRAdmin = Depends(require_admin_strict),
+    db: Session = Depends(get_db),
+):
+    """
+    Paginated candidate-results for the given HR. Mirrors /api/hr/results
+    but accepts an hr_id (admin can see ANY HR's candidates) and slices
+    server-side via SQL LIMIT/OFFSET so a busy HR doesn't ship hundreds
+    of rows in one request.
+
+    Returns 404 if hr_id doesn't match any user OR matches an admin.
+    Admins don't have candidates, and treating them as "not found" keeps
+    the URL space tidy — same pattern the candidate-detail endpoint
+    uses for HR vs admin sessions.
+
+    page is 1-indexed. page_size is capped server-side at 100 to defend
+    against a misbehaving client requesting half a million rows.
+    """
+    # Lazy imports: Invitation pulled in only here, mirrors list_users.
+    from models import Invitation
+
+    # Cap the page_size BEFORE doing any DB work — a tiny defense
+    # against accidental DDoS via large page_size values.
+    page_size = max(1, min(page_size, 100))
+    page = max(1, page)
+
+    target = db.query(HRAdmin).filter(HRAdmin.id == hr_id).first()
+    if target is None or target.role != "hr":
+        # Same generic 404 shape FastAPI uses elsewhere. Doesn't
+        # distinguish "no such id" from "id belongs to admin" — neither
+        # case is actionable from the admin's perspective.
+        raise HTTPException(status_code=404, detail="HR not found.")
+
+    # COUNT(*) for the total — matches the WHERE clause of the slice
+    # query so the pagination math the frontend does (ceil(total/page_size))
+    # is accurate.
+    total = (
+        db.query(Invitation)
+        .filter(Invitation.hr_admin_id == hr_id)
+        .count()
+    )
+
+    invitations = (
+        db.query(Invitation)
+        .filter(Invitation.hr_admin_id == hr_id)
+        .order_by(Invitation.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for inv in invitations:
+        s = inv.score  # None if Day-2 scoring hasn't filled it in yet
+        items.append(
+            ScoreSummary(
+                invitation_id=inv.id,
+                candidate_name=inv.candidate_name,
+                candidate_email=inv.candidate_email,
+                difficulty=inv.difficulty,
+                submitted_at=inv.submitted_at,
+                reading_score=s.reading_score if s else None,
+                writing_score=s.writing_score if s else None,
+                speaking_score=s.speaking_score if s else None,
+                total_score=s.total_score if s else None,
+                rating=s.rating if s else None,
+                include_reading=inv.include_reading,
+                include_writing=inv.include_writing,
+                include_speaking=inv.include_speaking,
+                email_status=inv.email_status,
+                email_error=inv.email_error if inv.email_status == "failed" else None,
+            )
+        )
+
+    return PaginatedScoreSummary(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.post("/hrs", response_model=HRCreateByAdminResponse, status_code=201)

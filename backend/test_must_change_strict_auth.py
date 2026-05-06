@@ -213,7 +213,7 @@ def test_real_hr_me_route_still_works_when_must_change(hr_user, db_session):
 
 
 def test_real_admin_route_returns_403_when_must_change(admin_user, db_session):
-    """End-to-end: a typical admin-portal route (/api/admin/hrs) must
+    """End-to-end: a typical admin-portal route (/api/admin/users) must
     block a session whose admin has must_change_password=True."""
     from fastapi.testclient import TestClient
     from main import app
@@ -225,6 +225,6 @@ def test_real_admin_route_returns_403_when_must_change(admin_user, db_session):
     r = c.post("/api/admin/login", json={"email": admin_user.email, "password": "testpass123"})
     assert r.status_code == 200
 
-    r2 = c.get("/api/admin/hrs")
+    r2 = c.get("/api/admin/users")
     assert r2.status_code == 403, r2.text
     assert r2.json()["detail"].get("code") == "must_change_password"
