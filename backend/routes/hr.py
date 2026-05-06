@@ -40,6 +40,7 @@ from schemas import (
     InviteCreateRequest,
     InviteCreateResponse,
     InvitationDetails,
+    ResendEmailRequest,
     ResendEmailResponse,
     ScoreSummary,
     ScoreDetail,
@@ -799,26 +800,36 @@ def invitation_details(
 
 
 # ------------------------------------------------------------------
-# Resend invitation email — same URL + access code, just send again
+# Resend invitation email — HR picks a new window; URL + access code stay
 # ------------------------------------------------------------------
 @router.post("/invite/{invitation_id}/resend-email", response_model=ResendEmailResponse)
 def resend_invitation_email(
     invitation_id: int,
+    payload: ResendEmailRequest,
     hr: HRAdmin = Depends(require_hr_strict),
     db: Session = Depends(get_db),
 ):
     """
-    Resend the invitation email to the candidate WITHOUT regenerating the
-    access code. Use cases:
-      - Initial email failed (e.g. SMTP timeout) — HR retries
-      - Candidate says they didn't receive it — HR resends same code
+    Resend the invitation email with a NEW scheduled validity window.
+    The original window has often expired by the time the HR notices the
+    candidate didn't take the test, so resending without picking new
+    dates would just send the candidate the same dead URL. The HR
+    submits {valid_from, valid_until, timezone} and the invitation row's
+    window columns are updated in place.
 
-    Distinct from /regenerate-code: this does NOT change the access_code
-    so a candidate who already received the original email can still use
-    the code if they find it later.
+    What stays the same:
+      - token (and therefore the exam URL)
+      - access_code (HR has a separate /regenerate-code endpoint if
+        they want to rotate the code)
+      - failed_code_attempts, code_locked, started_at, start_count —
+        otherwise resending would be a free way to reset lockout state
 
-    Refuses to resend after submission (test is over, pointless to resend).
-    Tenancy: 404 if not owned by this HR.
+    What changes:
+      - valid_from, expires_at, display_timezone
+      - email_status / email_error from the new send
+
+    Refuses to resend after submission (the test is over). Tenancy:
+    404 if not owned by this HR.
     """
     inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
     if not inv or inv.hr_admin_id != hr.id:
@@ -830,9 +841,37 @@ def resend_invitation_email(
             detail="This test has already been submitted. No need to resend.",
         )
 
+    # Validate the requested window using the same helper invite-create uses.
+    # Raises 400 with a human-readable message on past-start / inverted /
+    # too-short windows.
+    _validate_window(payload.valid_from, payload.valid_until)
+
+    # Validate the timezone against the supported_timezones allowlist —
+    # active-only, same as invite-create. _resolve_timezone raises 400
+    # with the list of valid options on miss.
+    _resolve_timezone(db, payload.timezone)
+
+    # Convert to naive UTC at the boundary, matching invite-create. The
+    # rest of the codebase compares naive UTC against naive UTC, so we
+    # MUST strip tzinfo here even though the wire format carries it.
+    new_valid_from = _to_naive_utc(payload.valid_from)
+    new_valid_until = _to_naive_utc(payload.valid_until)
+
+    inv.valid_from = new_valid_from
+    inv.expires_at = new_valid_until
+    inv.display_timezone = payload.timezone
+
+    # Commit the window update FIRST. If the email send fails after this,
+    # the row still reflects what HR intended — they'll see the new
+    # window in the candidate-detail panel and can retry resend. The
+    # opposite ordering (send first) would be worse: the email would
+    # advertise a window the row doesn't reflect if the commit failed.
+    db.commit()
+
     exam_url = f"{APP_BASE_URL}/exam/{inv.token}"
 
-    # Look up short label for email render (soft-resolve — see regenerate_code).
+    # Soft-resolve the timezone short label for email rendering — same
+    # pattern as the rest of the email-send path.
     _, tz_short_label = _resolve_timezone_for_email(db, inv.display_timezone)
 
     email_ok, email_err = send_invitation_email(
@@ -850,8 +889,8 @@ def resend_invitation_email(
         include_speaking=inv.include_speaking,
     )
 
-    # Update tracking columns (same logic as create_invite). Resend replaces
-    # the previous status — if a previous attempt succeeded but this one
+    # Update tracking columns and commit again. Resend replaces the
+    # previous status — if a previous attempt succeeded but this one
     # fails, HR needs to see the latest failure, not stale "sent".
     if email_ok:
         inv.email_status = "sent"
@@ -863,7 +902,9 @@ def resend_invitation_email(
 
     print(
         f"[resend] {hr.email} resent invite to {inv.candidate_email} "
-        f"(invitation_id={inv.id})  "
+        f"(invitation_id={inv.id}) with new window "
+        f"{new_valid_from.isoformat()} → {new_valid_until.isoformat()} "
+        f"({payload.timezone})  "
         f"email={'sent' if email_ok else 'FAILED: ' + (email_err or 'unknown')}"
     )
 
