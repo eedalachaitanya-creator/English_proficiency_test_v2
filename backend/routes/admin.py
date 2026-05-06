@@ -172,7 +172,6 @@ def change_password(
     sessions for this account, then re-pins the current request's
     session so the active tab keeps working.
     """
-    from datetime import datetime, timezone
     if not verify_password(payload.current_password, admin.password_hash):
         raise HTTPException(
             status_code=401,
@@ -181,6 +180,10 @@ def change_password(
 
     admin.password_hash = hash_password(payload.new_password)
     admin.password_changed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Clear the temp-password flag set by /api/admin/forgot-password.
+    # After this the route guard / strict-auth dep stop locking the
+    # admin to /change-password-required.
+    admin.must_change_password = False
     db.commit()
     db.refresh(admin)
     request.session["pw_v"] = admin.password_changed_at.isoformat()

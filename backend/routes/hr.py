@@ -280,6 +280,10 @@ def change_password(
 
     hr.password_hash = hash_password(payload.new_password)
     hr.password_changed_at = _utcnow_naive()
+    # Clear the temp-password flag set by /forgot-password. After this
+    # the route guard / strict-auth dep stop locking the user to
+    # /change-password-required and the rest of the app becomes usable.
+    hr.must_change_password = False
     db.commit()
     db.refresh(hr)
     # Re-pin the active session to the new password_changed_at — without

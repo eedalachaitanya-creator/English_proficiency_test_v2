@@ -253,3 +253,70 @@ def test_admin_change_password_hr_cannot_use_admin_endpoint():
         assert r.status_code == 401, r.text
     finally:
         _drop(hr.id)
+
+
+# ----------------------------------------------------------------------
+# must_change_password flag is cleared by a successful change-password
+# (paired with forgot-password setting it TRUE; together they unlock
+# the rest of the app after the user picks a permanent password).
+# ----------------------------------------------------------------------
+
+def _set_must_change(uid: int, value: bool) -> None:
+    """Force the must_change_password flag without going through the
+    forgot-password endpoint. Faster than running the real reset flow
+    just to set up the precondition."""
+    db = SessionLocal()
+    user = db.query(HRAdmin).filter(HRAdmin.id == uid).first()
+    user.must_change_password = value
+    db.commit()
+    db.close()
+
+
+def _must_change_for(uid: int) -> bool:
+    db = SessionLocal()
+    user = db.query(HRAdmin).filter(HRAdmin.id == uid).first()
+    db.close()
+    return user.must_change_password
+
+
+def test_change_password_clears_must_change_password_flag_hr():
+    """A successful HR change-password must set must_change_password
+    back to FALSE, so the route guard + strict-auth dep stop locking
+    the UI."""
+    hr = _make_hr(password="tempFromEmail1")
+    _set_must_change(hr.id, True)
+    try:
+        assert _must_change_for(hr.id) is True  # precondition
+
+        c = _login_client(hr.email, "tempFromEmail1")
+        r = c.post(
+            "/api/hr/change-password",
+            json={"current_password": "tempFromEmail1", "new_password": "permPass789"},
+        )
+        assert r.status_code == 200, r.text
+        assert _must_change_for(hr.id) is False, (
+            "must_change_password must be cleared after a successful "
+            "change — without this, the route guard would keep the "
+            "user on /change-password-required forever."
+        )
+    finally:
+        _drop(hr.id)
+
+
+def test_change_password_clears_must_change_password_flag_admin():
+    """A successful admin change-password must clear the flag — same
+    reason as the HR test above, mirrored for the admin endpoint."""
+    admin = _make_admin(password="tempAdminFromEmail1")
+    _set_must_change(admin.id, True)
+    try:
+        assert _must_change_for(admin.id) is True
+
+        c = _login_admin(admin.email, "tempAdminFromEmail1")
+        r = c.post(
+            "/api/admin/change-password",
+            json={"current_password": "tempAdminFromEmail1", "new_password": "permAdmin789"},
+        )
+        assert r.status_code == 200, r.text
+        assert _must_change_for(admin.id) is False
+    finally:
+        _drop(admin.id)
