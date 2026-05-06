@@ -152,6 +152,58 @@ def require_admin(request: Request, db: Session = Depends(get_db)) -> HRAdmin:
     """
     return _resolve_user_with_role(request, db, expected_role="admin")
 
+
+# ------------------------------------------------------------------
+# Strict auth — additionally rejects users who must change password
+# ------------------------------------------------------------------
+def _check_must_change_password(user: HRAdmin) -> None:
+    """Raise 403 with code='must_change_password' when the user is on a
+    temp credential. Used by require_hr_strict / require_admin_strict
+    to lock the entire authenticated surface area while the flag is
+    set, EXCEPT the allow-list (/me, /change-password, /refresh,
+    /logout) which uses the non-strict deps so the user can actually
+    clear the flag.
+
+    The detail is a dict so the frontend HTTP interceptor can branch
+    on `detail.code` rather than parsing strings. The message field is
+    human-readable for ops/log surfaces.
+    """
+    if user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "must_change_password",
+                "message": "Password change required.",
+            },
+        )
+
+
+def require_hr_strict(user: HRAdmin = Depends(require_hr)) -> HRAdmin:
+    """
+    Like require_hr, but additionally rejects users with
+    must_change_password=True (403 with code='must_change_password').
+
+    Use on every authenticated HR route EXCEPT the allow-list:
+      - GET  /api/hr/me
+      - POST /api/hr/change-password
+      - POST /api/hr/refresh
+      - POST /api/hr/logout
+    Those four MUST remain reachable so the user can clear the flag.
+    Everything else uses this dep so a user who reset their password
+    via /forgot-password and is holding the temp credential cannot
+    bypass the frontend route guard by hitting the API directly.
+    """
+    _check_must_change_password(user)
+    return user
+
+
+def require_admin_strict(user: HRAdmin = Depends(require_admin)) -> HRAdmin:
+    """Like require_admin, with the must-change-password gate. See
+    require_hr_strict for context — same allow-list semantics apply
+    to the admin endpoints."""
+    _check_must_change_password(user)
+    return user
+
 # ------------------------------------------------------------------
 # JWT dependencies
 # ------------------------------------------------------------------
