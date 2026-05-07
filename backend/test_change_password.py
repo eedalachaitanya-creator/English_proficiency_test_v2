@@ -128,25 +128,38 @@ def test_change_password_too_short_rejected():
         _drop(hr.id)
 
 
-def test_change_password_whitespace_only_rejected():
-    """New password of all whitespace → 422 (custom field validator).
-    Min-length=6 alone is satisfied by '      ' (6 spaces); the
-    schema's reject_blank_or_whitespace_only validator closes that
-    gap. Without this guard, an HR could 'change' to a useless
-    blank-string password."""
+def test_change_password_whitespace_rejected():
+    """No whitespace allowed anywhere in the password — banned to
+    avoid silent-padding bugs (user types 'mypass ' once, can't log
+    in later when typing 'mypass' without the space). Six spaces
+    also fails min_length effectively even though Pydantic's
+    min_length=6 alone wouldn't catch it. All variants below are
+    rejected by the schema's reject_whitespace validator."""
     hr = _make_hr(password="currentPass123")
     try:
         c = _login_client(hr.email, "currentPass123")
-        # Six spaces — passes min_length but is empty after .strip()
+        # Six spaces — all whitespace
         r = c.post(
             "/api/hr/change-password",
             json={"current_password": "currentPass123", "new_password": "      "},
         )
         assert r.status_code == 422, r.text
-        # Mostly whitespace — also rejected because stripped length is 3
+        # Trailing space — silent-padding scenario
         r = c.post(
             "/api/hr/change-password",
-            json={"current_password": "currentPass123", "new_password": "abc   "},
+            json={"current_password": "currentPass123", "new_password": "abcdef "},
+        )
+        assert r.status_code == 422, r.text
+        # Embedded space — also rejected
+        r = c.post(
+            "/api/hr/change-password",
+            json={"current_password": "currentPass123", "new_password": "abc def"},
+        )
+        assert r.status_code == 422, r.text
+        # Tab character — counts as whitespace
+        r = c.post(
+            "/api/hr/change-password",
+            json={"current_password": "currentPass123", "new_password": "abc\tdef"},
         )
         assert r.status_code == 422, r.text
     finally:
