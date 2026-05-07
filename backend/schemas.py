@@ -78,6 +78,23 @@ class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=6, max_length=128)
 
+    @field_validator("new_password")
+    @classmethod
+    def reject_blank_or_whitespace_only(cls, v: str) -> str:
+        """Reject passwords that are entirely whitespace, OR that have
+        fewer than 6 non-whitespace characters. The Field min_length=6
+        rule alone is satisfied by '      ' (6 spaces), which is a
+        useless password — bcrypt would happily hash it and the user
+        could 'log in' with any 6 spaces. This validator closes that
+        gap at the schema layer so every endpoint that accepts a
+        ChangePasswordRequest is protected without each route needing
+        to re-check."""
+        if len(v.strip()) < 6:
+            raise ValueError(
+                "Password must contain at least 6 non-whitespace characters."
+            )
+        return v
+
 
 # ============================================================
 # Admin portal — auth + HR management
@@ -148,6 +165,18 @@ class UserCreateByAdminRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
     role: Literal["hr", "admin"] = "hr"
+
+    @field_validator("password")
+    @classmethod
+    def reject_blank_or_whitespace_only(cls, v: str) -> str:
+        """Same protection as ChangePasswordRequest.new_password. Without
+        this an admin could create an account with '      ' (6 spaces)
+        as the password — useless and a security hole."""
+        if len(v.strip()) < 6:
+            raise ValueError(
+                "Password must contain at least 6 non-whitespace characters."
+            )
+        return v
 
 
 class UserCreateByAdminResponse(BaseModel):

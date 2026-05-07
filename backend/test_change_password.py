@@ -128,6 +128,31 @@ def test_change_password_too_short_rejected():
         _drop(hr.id)
 
 
+def test_change_password_whitespace_only_rejected():
+    """New password of all whitespace → 422 (custom field validator).
+    Min-length=6 alone is satisfied by '      ' (6 spaces); the
+    schema's reject_blank_or_whitespace_only validator closes that
+    gap. Without this guard, an HR could 'change' to a useless
+    blank-string password."""
+    hr = _make_hr(password="currentPass123")
+    try:
+        c = _login_client(hr.email, "currentPass123")
+        # Six spaces — passes min_length but is empty after .strip()
+        r = c.post(
+            "/api/hr/change-password",
+            json={"current_password": "currentPass123", "new_password": "      "},
+        )
+        assert r.status_code == 422, r.text
+        # Mostly whitespace — also rejected because stripped length is 3
+        r = c.post(
+            "/api/hr/change-password",
+            json={"current_password": "currentPass123", "new_password": "abc   "},
+        )
+        assert r.status_code == 422, r.text
+    finally:
+        _drop(hr.id)
+
+
 def test_change_password_no_session_rejected():
     """Anonymous request → 401 from require_hr."""
     c = TestClient(app)
