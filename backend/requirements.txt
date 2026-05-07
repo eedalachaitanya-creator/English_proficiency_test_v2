@@ -27,3 +27,7 @@ azure-cognitiveservices-speech>=1.40 # Pronunciation assessment
 # Email (Day 3)
 aiosmtplib>=3.0
 tzdata
+
+# Report generation
+reportlab>=4.0           # PDF generation for single-candidate reports
+openpyxl>=3.1  

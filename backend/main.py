@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+
 # database.py calls load_dotenv() at import time, so env vars are populated by here.
 import database  # noqa: F401
 
@@ -144,11 +145,17 @@ from routes import candidate as candidate_routes
 from routes import submit as submit_routes
 from routes import hr_content as hr_content_routes
 from routes import admin as admin_routes
+from routes import hr_reports as hr_reports_routes
+from routes import admin_reports as admin_reports_routes
+
 app.include_router(hr_routes.router)
 app.include_router(candidate_routes.router)
 app.include_router(submit_routes.router)
 app.include_router(hr_content_routes.router)
 app.include_router(admin_routes.router)
+app.include_router(hr_reports_routes.router)
+app.include_router(admin_reports_routes.router)
+
 
 
 # Catch-all so an unknown /api/... path returns 404 JSON.
