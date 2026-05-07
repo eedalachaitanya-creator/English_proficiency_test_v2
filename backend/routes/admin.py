@@ -48,8 +48,8 @@ from schemas import (
     AdminUserSummary,
     ChangePasswordRequest,
     ForgotPasswordRequest,
-    HRCreateByAdminRequest,
-    HRCreateByAdminResponse,
+    UserCreateByAdminRequest,
+    UserCreateByAdminResponse,
     PaginatedScoreSummary,
     ScoreSummary,
 )
@@ -467,66 +467,66 @@ def list_hr_candidates(
     )
 
 
-@router.post("/hrs", response_model=HRCreateByAdminResponse, status_code=201)
-def create_hr(
-    payload: HRCreateByAdminRequest,
+@router.post("/users", response_model=UserCreateByAdminResponse, status_code=201)
+def create_user(
+    payload: UserCreateByAdminRequest,
     _admin: HRAdmin = Depends(require_admin_strict),
     db: Session = Depends(get_db),
 ):
     """
-    Create an HR account. Admin-typed password (hashed server-side via
-    bcrypt). After insert, send a welcome email containing the login URL
-    + email + plaintext password — best-effort: the row is committed
-    even if SMTP fails so the admin can share credentials manually.
+    Create an HR or admin account. Admin-typed password (hashed
+    server-side via bcrypt). After insert, send a welcome email
+    containing the login URL + email + plaintext password — best-effort:
+    the row is committed even if SMTP fails so the admin can share
+    credentials manually.
 
-    Refuses to create an HR with an email that's already in use, even if
-    the existing row is an admin (would silently demote that admin
-    otherwise — same guard the create_hr.py CLI has).
+    Refuses to create a user whose email is already in use, regardless of
+    the existing row's role. Silent role-flips would be a security
+    surprise (a freshly-created "HR" that's actually an admin would
+    inherit admin privileges) — same guard the create_hr.py CLI has,
+    now generalized to both directions.
     """
     email = payload.email.lower()
     name = payload.name.strip()
 
     existing = db.query(HRAdmin).filter(HRAdmin.email == email).first()
     if existing:
-        if existing.role == "admin":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "That email is already in use by an admin account. "
-                    "Pick a different email or remove the admin first."
-                ),
-            )
+        # Role-aware error so the admin knows whether to pick a different
+        # email or remove the existing account first.
+        existing_label = "admin" if existing.role == "admin" else "HR"
         raise HTTPException(
             status_code=409,
-            detail="An HR account with that email already exists.",
+            detail=f"That email is already in use by an {existing_label} account.",
         )
 
-    hr = HRAdmin(
+    user = HRAdmin(
         name=name,
         email=email,
         password_hash=hash_password(payload.password),
-        role="hr",
+        role=payload.role,
     )
-    db.add(hr)
+    db.add(user)
     db.commit()
-    db.refresh(hr)
+    db.refresh(user)
 
     # Send welcome email (best-effort — same pattern as candidate invitations).
     # Lazy import of email_service only (SMTP libs are big); APP_BASE_URL
     # comes from the module-level read above.
-    from email_service import send_hr_welcome_email
+    from email_service import send_user_welcome_email
 
-    email_ok, email_err = send_hr_welcome_email(
-        hr_email=hr.email,
-        hr_name=hr.name,
+    email_ok, email_err = send_user_welcome_email(
+        user_email=user.email,
+        user_name=user.name,
+        role=user.role,
         login_url=f"{APP_BASE_URL}/login",
         plaintext_password=payload.password,
     )
 
-    return HRCreateByAdminResponse(
-        id=hr.id,
-        name=hr.name,
-        email=hr.email,
+    return UserCreateByAdminResponse(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
         email_status="sent" if email_ok else "failed",
         email_error=email_err,
     )

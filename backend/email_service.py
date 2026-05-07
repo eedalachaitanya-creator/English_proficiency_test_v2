@@ -249,7 +249,7 @@ def send_temp_password_email(
     or the user is locked out of their account).
 
     The temp password is plaintext in this email — same trade-off as
-    send_hr_welcome_email. The email subject and body strongly prompt
+    send_user_welcome_email. The email subject and body strongly prompt
     the recipient to change the password immediately after logging in.
     """
     if not _SMTP_CONFIGURED:
@@ -437,18 +437,23 @@ def _temp_password_html_body(
 </html>"""
 
 
-def send_hr_welcome_email(
+def send_user_welcome_email(
     *,
-    hr_email: str,
-    hr_name: str,
+    user_email: str,
+    user_name: str,
+    role: str,
     login_url: str,
     plaintext_password: str,
 ) -> tuple[bool, str | None]:
     """
-    Notify a newly-created HR user that their account exists, with the
-    credentials the admin chose. Same (success, error) contract as the
-    candidate email helpers — never raises, returns a short reason on
-    failure so the admin UI can surface it.
+    Notify a newly-created user (HR or admin) that their account exists,
+    with the credentials the admin chose. Same (success, error) contract
+    as the candidate email helpers — never raises, returns a short reason
+    on failure so the admin UI can surface it.
+
+    `role` is "hr" or "admin" — only the subject line, the account
+    description ("HR account" vs "admin account"), and the post-login
+    capability sentence change. Everything else is shared.
 
     NOTE: this email contains a plaintext password. That's a deliberate
     v1 trade-off (admin chose to share via email). v2 should switch to a
@@ -459,16 +464,30 @@ def send_hr_welcome_email(
         print(f"[smtp] SKIPPED: {err}.")
         return (False, err)
 
+    is_admin = role == "admin"
+    role_label = "admin" if is_admin else "HR"
+    # Single line that swaps based on the new account's privileges. HR
+    # invites candidates; admin manages users (HRs + other admins) and
+    # has access to everything HR can do too.
+    capabilities = (
+        "Once logged in you can manage users (HR + admin accounts) and\n"
+        "review every candidate result on the platform."
+        if is_admin
+        else
+        "Sign in via the HR card on the login page. Once logged in you\n"
+        "can invite candidates and review their results."
+    )
+
     msg = EmailMessage()
-    msg["Subject"] = "Your English Proficiency Test HR account"
+    msg["Subject"] = f"Your English Proficiency Test {role_label} account"
     msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_FROM_EMAIL))
-    msg["To"] = hr_email
+    msg["To"] = user_email
     msg["Reply-To"] = SMTP_FROM_EMAIL
 
     msg.set_content(
-        f"Dear {hr_name},\n"
+        f"Dear {user_name},\n"
         f"\n"
-        f"An admin has created an HR account for you on the English\n"
+        f"An admin has created an {role_label} account for you on the English\n"
         f"Proficiency Test platform.\n"
         f"\n"
         f"--------------------------------------------\n"
@@ -476,15 +495,13 @@ def send_hr_welcome_email(
         f"--------------------------------------------\n"
         f"\n"
         f"  Login URL: {login_url}\n"
-        f"  Email:     {hr_email}\n"
+        f"  Email:     {user_email}\n"
         f"  Password:  {plaintext_password}\n"
         f"\n"
-        f"Sign in via the HR card on the login page. Once logged in you\n"
-        f"can invite candidates and review their results.\n"
+        f"{capabilities}\n"
         f"\n"
         f"For security, please change your password after your first login\n"
-        f"by asking the admin (self-service password change is on the\n"
-        f"roadmap).\n"
+        f"from the account menu.\n"
         f"\n"
         f"If you weren't expecting this email, please reply to let us know.\n"
         f"\n"
@@ -501,7 +518,7 @@ def send_hr_welcome_email(
             server.starttls(context=context)
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
-        print(f"[smtp] sent HR welcome email to {hr_email}")
+        print(f"[smtp] sent {role_label} welcome email to {user_email}")
         return (True, None)
     except smtplib.SMTPAuthenticationError as e:
         err = "SMTP authentication failed (check app password)"
@@ -509,7 +526,7 @@ def send_hr_welcome_email(
         return (False, err)
     except (smtplib.SMTPException, OSError, TimeoutError) as e:
         err = f"{type(e).__name__}: {str(e)[:150]}"
-        print(f"[smtp] FAILED to send HR welcome to {hr_email}: {err}")
+        print(f"[smtp] FAILED to send {role_label} welcome to {user_email}: {err}")
         return (False, err)
 
 

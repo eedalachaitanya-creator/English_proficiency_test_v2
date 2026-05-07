@@ -137,21 +137,27 @@ class AdminUserSummary(BaseModel):
     created_at: datetime
 
 
-class HRCreateByAdminRequest(BaseModel):
-    """POST /api/admin/hrs. Admin types the password directly; we pass
+class UserCreateByAdminRequest(BaseModel):
+    """POST /api/admin/users. Admin types the password directly; we pass
     the plaintext to bcrypt server-side. Min password length here mirrors
-    the create_hr.py CLI rule for consistency."""
+    the create_hr.py CLI rule for consistency.
+
+    `role` decides whether the new account is a peer admin or an HR.
+    """
     name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
+    role: Literal["hr", "admin"] = "hr"
 
 
-class HRCreateByAdminResponse(BaseModel):
-    """Response after creating an HR. Includes email_status so the admin
-    UI can surface SMTP failures the same way candidate-invite does."""
+class UserCreateByAdminResponse(BaseModel):
+    """Response after creating an HR or admin. Includes email_status so
+    the admin UI can surface SMTP failures the same way candidate-invite
+    does, and role so the UI can show the right success copy."""
     id: int
     name: str
     email: EmailStr
+    role: Literal["hr", "admin"]
     email_status: str  # "sent" | "failed" | "pending"
     email_error: Optional[str] = None
 
