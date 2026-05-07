@@ -714,7 +714,7 @@ def build_candidate_pdf(
     story += _build_speaking_section(inv, score, audio_recordings, speaking_topic_prompts)
     story += _build_feedback_section(score)
     story += _build_integrity_section(inv)
-    story += _build_footer(inv)
+    
 
     doc.build(story)
     pdf_bytes = buf.getvalue()
