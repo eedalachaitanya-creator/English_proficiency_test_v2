@@ -70,7 +70,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "English Proficiency Test").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "FluentiQ").strip()
 
 _SMTP_CONFIGURED = bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD and SMTP_FROM_EMAIL)
 
@@ -258,7 +258,7 @@ def send_temp_password_email(
         return (False, err)
 
     msg = EmailMessage()
-    msg["Subject"] = "Your English Proficiency Test password has been reset"
+    msg["Subject"] = "Your FluentiQ password has been reset"
     msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_FROM_EMAIL))
     msg["To"] = hr_email
     msg["Reply-To"] = SMTP_FROM_EMAIL
@@ -267,8 +267,7 @@ def send_temp_password_email(
         f"Dear {hr_name},\n"
         f"\n"
         f"You (or someone using your email) requested a password reset for\n"
-        f"your English Proficiency Test HR account. Your new temporary\n"
-        f"password is below.\n"
+        f"your FluentiQ HR account. Your new temporary password is below.\n"
         f"\n"
         f"--------------------------------------------\n"
         f"YOUR NEW TEMPORARY PASSWORD\n"
@@ -357,7 +356,7 @@ def _temp_password_html_body(
       <!-- Header band -->
       <div style="background:#1e3a8a;padding:24px 32px;color:#ffffff;">
         <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">Password Reset</h1>
-        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">English Proficiency Test &middot; Stixis HR</p>
+        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">FluentiQ &middot; Stixis HR</p>
       </div>
 
       <!-- Body card -->
@@ -366,8 +365,8 @@ def _temp_password_html_body(
         <p style="margin:0 0 16px 0;font-size:16px;color:#111827;">Dear {hr_name},</p>
         <p style="margin:0 0 28px 0;font-size:15px;color:#374151;">
           You (or someone using your email) requested a password reset for your
-          English Proficiency Test HR account. Use the temporary password below
-          to log in, then change it from your account menu right away.
+          FluentiQ HR account. Use the temporary password below to log in, then
+          change it from your account menu right away.
         </p>
 
         <!-- Credentials block -->
@@ -479,7 +478,7 @@ def send_user_welcome_email(
     )
 
     msg = EmailMessage()
-    msg["Subject"] = f"Your English Proficiency Test {role_label} account"
+    msg["Subject"] = f"Your FluentiQ {role_label} account"
     msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_FROM_EMAIL))
     msg["To"] = user_email
     msg["Reply-To"] = SMTP_FROM_EMAIL
@@ -487,8 +486,7 @@ def send_user_welcome_email(
     msg.set_content(
         f"Dear {user_name},\n"
         f"\n"
-        f"An admin has created an {role_label} account for you on the English\n"
-        f"Proficiency Test platform.\n"
+        f"An admin has created an {role_label} account for you on FluentiQ.\n"
         f"\n"
         f"--------------------------------------------\n"
         f"YOUR LOGIN CREDENTIALS\n"
@@ -512,6 +510,20 @@ def send_user_welcome_email(
         f"This is an automated email. Do not forward your password to anyone."
     )
 
+    # HTML alternative — same content, friendlier visual treatment.
+    # Mirrors the temp-password email's styling so the two automated
+    # account-state emails look like siblings in the user's inbox.
+    msg.add_alternative(
+        _user_welcome_html_body(
+            user_name=user_name,
+            user_email=user_email,
+            role=role,
+            login_url=login_url,
+            plaintext_password=plaintext_password,
+        ),
+        subtype="html",
+    )
+
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
             context = ssl.create_default_context(cafile=certifi.where())
@@ -528,6 +540,120 @@ def send_user_welcome_email(
         err = f"{type(e).__name__}: {str(e)[:150]}"
         print(f"[smtp] FAILED to send {role_label} welcome to {user_email}: {err}")
         return (False, err)
+
+
+def _user_welcome_html_body(
+    *,
+    user_name: str,
+    user_email: str,
+    role: str,
+    login_url: str,
+    plaintext_password: str,
+) -> str:
+    """
+    HTML body for the welcome email sent when an admin creates a new
+    user (HR or admin). Mirrors the visual language of the temp-password
+    email — same navy header band, same white card layout, same CTA
+    button shape — so the two account-state emails feel like siblings.
+
+    Email-client-safe: inline styles only, no external stylesheets,
+    no JS, fixed max-width 600px.
+    """
+    is_admin = role == "admin"
+    role_label = "admin" if is_admin else "HR"
+    headline = "Your admin account is ready" if is_admin else "Your HR account is ready"
+    capabilities_html = (
+        "Once logged in you can manage users (HR + admin accounts) and "
+        "review every candidate result on the platform."
+        if is_admin
+        else
+        "Sign in via the HR card on the login page. Once logged in you "
+        "can invite candidates and review their results."
+    )
+
+    return f"""\
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:24px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;background:#f3f4f6;line-height:1.6;">
+    <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+
+      <!-- Header band -->
+      <div style="background:#1e3a8a;padding:24px 32px;color:#ffffff;">
+        <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">{headline}</h1>
+        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">FluentiQ &middot; Stixis HR</p>
+      </div>
+
+      <!-- Body card -->
+      <div style="padding:32px;">
+
+        <p style="margin:0 0 16px 0;font-size:16px;color:#111827;">Dear {user_name},</p>
+        <p style="margin:0 0 28px 0;font-size:15px;color:#374151;">
+          An admin has created an {role_label} account for you on FluentiQ.
+          Use the credentials below to sign in.
+        </p>
+
+        <!-- Credentials block -->
+        <div style="margin:0 0 28px 0;background:#f9fafb;border:1px solid #e5e7eb;border-left:4px solid #1e3a8a;border-radius:6px;padding:18px 20px;">
+          <p style="margin:0 0 10px 0;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Your login credentials</p>
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;">
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;width:90px;vertical-align:top;">Email</td>
+              <td style="padding:6px 0;font-size:14px;color:#111827;font-weight:600;word-break:break-all;">{user_email}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;vertical-align:top;">Password</td>
+              <td style="padding:6px 0;">
+                <span style="display:inline-block;background:#ffffff;border:1px solid #d1d5db;border-radius:4px;padding:6px 10px;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:14px;color:#111827;letter-spacing:0.5px;">{plaintext_password}</span>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- CTA button -->
+        <div style="margin:0 0 16px 0;text-align:center;">
+          <a href="{login_url}"
+             style="display:inline-block;background:#1e3a8a;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:6px;font-size:16px;font-weight:600;letter-spacing:0.2px;">
+            Log In &rarr;
+          </a>
+        </div>
+
+        <!-- Fallback link in case the button is stripped -->
+        <p style="margin:0 0 28px 0;font-size:12px;color:#6b7280;text-align:center;">
+          Button not working? Copy this link:<br>
+          <a href="{login_url}" style="color:#1e3a8a;word-break:break-all;">{login_url}</a>
+        </p>
+
+        <!-- What you can do once logged in -->
+        <div style="margin:0 0 24px 0;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:14px 18px;">
+          <p style="margin:0;font-size:13px;color:#1e40af;line-height:1.55;">
+            <strong>Once you log in:</strong> {capabilities_html}
+            For security, please change your password from the account menu after your first login.
+          </p>
+        </div>
+
+        <!-- Unexpected-email notice -->
+        <div style="margin:0 0 24px 0;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:14px 18px;">
+          <p style="margin:0;font-size:13px;color:#7f1d1d;line-height:1.55;">
+            If you weren&rsquo;t expecting this email, please reply so we can investigate.
+            Your password is sensitive &mdash; do not forward it to anyone.
+          </p>
+        </div>
+
+        <!-- Signature -->
+        <p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>
+        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">Stixis HR Team</p>
+
+      </div>
+
+      <!-- Footer disclaimer -->
+      <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
+        <p style="margin:0;font-size:11px;color:#9ca3af;text-align:center;line-height:1.5;">
+          This is an automated email from FluentiQ. Do not forward your password to anyone.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -680,9 +806,9 @@ def _build_invitation_message(
     provided, the email falls back to showing the raw IANA name.
     """
     if regenerated:
-        subject = "Action required: Your English Proficiency Test access code has been reset"
+        subject = "Action required: Your FluentiQ access code has been reset"
     else:
-        subject = "Action required: Your English Proficiency Test invitation"
+        subject = "Action required: Your FluentiQ invitation"
 
     # Format the scheduled window once for use in both the plain text and HTML
     # bodies. Empty string when no window provided (e.g. regenerate-code path).
@@ -710,7 +836,7 @@ def _build_invitation_message(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    # formataddr renders as: "English Proficiency Test <Sinchana.R@stixis.com>"
+    # formataddr renders as: "FluentiQ <Sinchana.R@stixis.com>"
     msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_FROM_EMAIL))
     msg["To"] = candidate_email
     # Reply-To = the HR who sent the invite, so candidates can ask questions.
@@ -763,11 +889,11 @@ def _plain_text_body(
     if regenerated:
         intro = (
             "Your access code has been reset. Kindly use the new code below "
-            "to log in and complete your English Proficiency Assessment."
+            "to log in and complete your FluentiQ English Proficiency Assessment."
         )
     else:
         intro = (
-            "You have been invited to complete an English Proficiency "
+            "You have been invited to complete the FluentiQ English Proficiency "
             "Assessment as part of the recruitment process."
         )
 
@@ -865,12 +991,12 @@ def _html_body(
     if regenerated:
         intro = (
             "Your access code has been reset. Kindly use the new code below "
-            "to log in and complete your English Proficiency Assessment."
+            "to log in and complete your FluentiQ English Proficiency Assessment."
         )
         cta_label = "Resume Assessment"
     else:
         intro = (
-            "You have been invited to complete an English Proficiency "
+            "You have been invited to complete the FluentiQ English Proficiency "
             "Assessment as part of the recruitment process."
         )
         cta_label = "Begin Assessment"
@@ -903,7 +1029,7 @@ def _html_body(
 
       <!-- Header -->
       <div style="background:#1e3a8a;padding:24px 32px;color:#ffffff;">
-        <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">English Proficiency Test</h1>
+        <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">FluentiQ &middot; English Proficiency Assessment</h1>
         <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">Stixis Recruitment Assessment</p>
       </div>
 

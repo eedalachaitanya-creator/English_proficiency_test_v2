@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="English Proficiency Test API",
+    title="FluentiQ API",
     version="0.1.0",
     lifespan=lifespan,
 )
