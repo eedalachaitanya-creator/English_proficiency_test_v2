@@ -62,6 +62,13 @@ class HRAdmin(Base):
     # consult this flag to lock everything except the change-password
     # screen. See docs/superpowers/specs/2026-05-06-admin-forgot-password-design.md.
     must_change_password = Column(Boolean, default=False, nullable=False)
+    # Soft-delete timestamp. NULL = active. When an admin deletes an
+    # HR via DELETE /api/admin/users/{id} we set this to utcnow()
+    # rather than removing the row, so the HR's invitations and the
+    # candidate results attached to them are preserved for audits.
+    # Login + JWT-resolution + the All Users listing all filter
+    # `deleted_at IS NULL` to hide soft-deleted accounts.
+    deleted_at = Column(DateTime, nullable=True)
 
     # Each HR has many invitations they've sent. Admins won't have any.
     invitations = relationship("Invitation", back_populates="hr", cascade="all, delete-orphan")

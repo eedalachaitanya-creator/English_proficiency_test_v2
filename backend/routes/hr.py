@@ -185,7 +185,11 @@ def login(payload: HRLoginRequest, request: Request, db: Session = Depends(get_d
     HR") — don't leak which one failed (slows enumeration attacks AND
     avoids hinting that the email belongs to an admin).
     """
-    hr = db.query(HRAdmin).filter(HRAdmin.email == payload.email.lower()).first()
+    hr = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.email == payload.email.lower(), HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if (
         not hr
         or hr.role != "hr"
@@ -243,7 +247,11 @@ def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get
     except (TypeError, ValueError):
         raise HTTPException(status_code=401, detail=GENERIC_401)
 
-    hr = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    hr = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == user_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if not hr or hr.role != "hr" or decoded.get("role") != "hr":
         raise HTTPException(status_code=401, detail=GENERIC_401)
 
@@ -352,7 +360,11 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         sleep_to_latency_floor(started_at)
         return FORGOT_PASSWORD_GENERIC_RESPONSE
 
-    hr = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
+    hr = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.email == email_lower, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
 
     # Walk through the privileged-email cases without exposing them. An
     # admin email or a missing email both fall through to the same 200.
@@ -412,7 +424,11 @@ def session_status(request: Request, db: Session = Depends(get_db)):
     if not hr_id:
         return {"logged_in": False, "user": None}
 
-    hr = db.query(HRAdmin).filter(HRAdmin.id == hr_id).first()
+    hr = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == hr_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if not hr:
         # Session has an hr_admin_id but the user was deleted from the DB.
         # Clear the stale session and report logged-out.

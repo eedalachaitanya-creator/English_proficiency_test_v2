@@ -90,9 +90,13 @@ def _resolve_user_with_role(
             detail=GENERIC_401,
         )
 
-    hr = db.query(HRAdmin).filter(HRAdmin.id == hr_id).first()
+    hr = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == hr_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if not hr:
-        # Session points to a deleted user — clear and reject.
+        # Session points to a deleted (or soft-deleted) user — clear and reject.
         request.session.clear()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -261,9 +265,13 @@ def _resolve_jwt_user_with_role(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    hr = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    hr = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == user_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if not hr:
-        # Token points to a deleted user — reject.
+        # Token points to a deleted (or soft-deleted) user — reject.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=GENERIC_401,

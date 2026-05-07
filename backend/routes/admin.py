@@ -90,7 +90,11 @@ def login(payload: AdminLoginRequest, request: Request, db: Session = Depends(ge
     Both auth mechanisms are issued on success: session cookie (existing)
     and JWT access+refresh tokens (new). Frontend uses JWT going forward.
     """
-    user = db.query(HRAdmin).filter(HRAdmin.email == payload.email.lower()).first()
+    user = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.email == payload.email.lower(), HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if (
         not user
         or user.role != "admin"
@@ -146,7 +150,11 @@ def refresh_access_token(payload: AdminRefreshTokenRequest, db: Session = Depend
     except (TypeError, ValueError):
         raise HTTPException(status_code=401, detail=GENERIC_401)
 
-    user = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    user = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == user_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if not user or user.role != "admin" or decoded.get("role") != "admin":
         raise HTTPException(status_code=401, detail=GENERIC_401)
 
@@ -245,7 +253,11 @@ def admin_forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(
         sleep_to_latency_floor(started_at)
         return FORGOT_PASSWORD_GENERIC_RESPONSE
 
-    user = db.query(HRAdmin).filter(HRAdmin.email == email_lower).first()
+    user = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.email == email_lower, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
 
     if user is None or user.role != "admin":
         # Same constant-time padding path the HR endpoint uses — without
@@ -299,7 +311,11 @@ def session_status(request: Request, db: Session = Depends(get_db)):
     if not user_id:
         return {"logged_in": False, "user": None}
 
-    user = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    user = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == user_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if not user:
         request.session.clear()
         return {"logged_in": False, "user": None}
@@ -362,6 +378,7 @@ def list_users(_admin: HRAdmin = Depends(require_admin_strict), db: Session = De
     rows = (
         db.query(HRAdmin, invite_counts.c.count)
         .outerjoin(invite_counts, HRAdmin.id == invite_counts.c.hr_admin_id)
+        .filter(HRAdmin.deleted_at.is_(None))
         .order_by(role_rank, HRAdmin.created_at.desc())
         .all()
     )
@@ -411,7 +428,11 @@ def list_hr_candidates(
     page_size = max(1, min(page_size, 100))
     page = max(1, page)
 
-    target = db.query(HRAdmin).filter(HRAdmin.id == hr_id).first()
+    target = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == hr_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if target is None or target.role != "hr":
         # Same generic 404 shape FastAPI uses elsewhere. Doesn't
         # distinguish "no such id" from "id belongs to admin" — neither
@@ -489,7 +510,15 @@ def create_user(
     email = payload.email.lower()
     name = payload.name.strip()
 
-    existing = db.query(HRAdmin).filter(HRAdmin.email == email).first()
+    # Soft-deleted accounts don't count as collisions — the partial unique
+    # index on email already permits reuse, and re-creating an account
+    # under an old email is one of the recovery paths that motivated soft
+    # delete in the first place.
+    existing = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.email == email, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
     if existing:
         # Role-aware error so the admin knows whether to pick a different
         # email or remove the existing account first.
@@ -530,3 +559,53 @@ def create_user(
         email_status="sent" if email_ok else "failed",
         email_error=email_err,
     )
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(
+    user_id: int,
+    admin: HRAdmin = Depends(require_admin_strict),
+    db: Session = Depends(get_db),
+):
+    """
+    Soft-delete an HR account. Sets `deleted_at = utcnow()` on the
+    `hr_admins` row; the row stays in the DB so the HR's invitations
+    and the candidate results attached to them are preserved for
+    audits and historical reporting.
+
+    Constraints:
+      - HR rows only. Admin rows are refused (different concern; would
+        also let an admin nuke a peer accidentally).
+      - Cannot soft-delete a row that's already soft-deleted (idempotent
+        but noisy in logs — return 404 like a missing row).
+      - Self-delete is implicitly impossible because admins are excluded
+        from this endpoint, but we double-check on the id too in case
+        an HR ever hits this somehow (defense in depth).
+
+    The HR's session immediately becomes invalid: the auth dependencies
+    + login query all filter `deleted_at IS NULL`, so any in-flight
+    request from a deleted HR's JWT/session token gets a 401 on its
+    next call. Their email becomes reusable thanks to the partial
+    unique index from migration b7e2c3d8a91f.
+    """
+    target = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
+    if target is None or target.deleted_at is not None:
+        # Already-deleted is treated as "not found" — same surface to
+        # the client either way, and it makes the endpoint idempotent
+        # in the practical sense (a second click doesn't error).
+        raise HTTPException(status_code=404, detail="HR not found.")
+
+    if target.role != "hr":
+        # Refusing here keeps the surface small. Admin-on-admin deletion
+        # is a separate, riskier flow that needs its own UI/auth gate.
+        raise HTTPException(
+            status_code=400,
+            detail="Only HR accounts can be deleted from this endpoint.",
+        )
+
+    if target.id == admin.id:  # belt-and-suspenders; admin.role != 'hr' so unreachable
+        raise HTTPException(status_code=400, detail="You cannot delete yourself.")
+
+    target.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    return None
