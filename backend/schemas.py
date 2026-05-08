@@ -269,6 +269,13 @@ class InviteCreateResponse(BaseModel):
     #   "pending" → SMTP not configured at all (treat like "failed" in UI)
     email_status: str
     email_error: Optional[str] = None    # short reason if email_status == "failed"
+    # Teams meeting URL — populated when the invite handler successfully
+    # created a Teams meeting alongside the invitation. Optional for
+    # backward compatibility with the regenerate-code path (which doesn't
+    # create a new Teams meeting), and so older clients that don't read
+    # this field continue to work. Frontend displays it in the post-invite
+    # modal so HR can copy/paste as a backup to the email.
+    teams_join_url: Optional[str] = None
 
 
 class InvitationDetails(BaseModel):

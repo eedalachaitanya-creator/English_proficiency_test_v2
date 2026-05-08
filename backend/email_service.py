@@ -96,6 +96,7 @@ def send_invitation_email(
     include_reading: bool = True,
     include_writing: bool = True,
     include_speaking: bool = True,
+    teams_join_url: str | None = None,
 ) -> tuple[bool, str | None]:
     """
     Send an invitation email containing the test URL and 6-digit access code.
@@ -114,6 +115,12 @@ def send_invitation_email(
     `timezone_short_label` is the friendly abbreviation ("IST", "PT") looked
     up by the route handler from the supported_timezones table. Optional —
     when None, the email falls back to showing the raw IANA name.
+
+    `teams_join_url` is the Microsoft Teams meeting URL. When provided,
+    the email gets two visual treatments: (1) a "Join Teams Meeting" CTA
+    block above the existing Begin Assessment button, and (2) the URL is
+    referenced in the INSTRUCTIONS list as step 1. When None (e.g. the
+    regenerate-code path), the email looks exactly as it did before.
     """
     if not _SMTP_CONFIGURED:
         err = "SMTP not configured (missing env vars)"
@@ -134,6 +141,7 @@ def send_invitation_email(
         include_reading=include_reading,
         include_writing=include_writing,
         include_speaking=include_speaking,
+        teams_join_url=teams_join_url,
     )
 
     try:
@@ -178,6 +186,7 @@ def send_regenerated_code_email(
     include_reading: bool = True,
     include_writing: bool = True,
     include_speaking: bool = True,
+    teams_join_url: str | None = None,
 ) -> tuple[bool, str | None]:
     """
     Send an email when HR regenerates a candidate's access code (e.g. after
@@ -190,6 +199,12 @@ def send_regenerated_code_email(
 
     `timezone_short_label` is the friendly abbreviation ("IST", "PT") from
     the supported_timezones table. The route handler looks it up.
+
+    `teams_join_url` is the Microsoft Teams meeting URL — same one stored
+    on the Invitation row at create time. Regenerate-code does NOT create
+    a new Teams meeting (the interview is the same, only the access code
+    rotated), so we just include the existing URL in the email so the
+    candidate sees it again alongside their new code.
     """
     if not _SMTP_CONFIGURED:
         err = "SMTP not configured (missing env vars)"
@@ -210,6 +225,7 @@ def send_regenerated_code_email(
         include_reading=include_reading,
         include_writing=include_writing,
         include_speaking=include_speaking,
+        teams_join_url=teams_join_url,
     )
 
     try:
@@ -231,6 +247,254 @@ def send_regenerated_code_email(
         err = f"{type(e).__name__}: {str(e)[:150]}"
         print(f"[smtp] FAILED to send to {candidate_email}: {err}")
         return (False, err)
+
+
+def send_hr_interview_confirmation_email(
+    *,
+    hr_email: str,
+    hr_name: str,
+    candidate_name: str,
+    candidate_email: str,
+    valid_from,
+    valid_until,
+    teams_join_url: str,
+    display_timezone: str | None = None,
+    timezone_short_label: str | None = None,
+) -> tuple[bool, str | None]:
+    """
+    Send HR a confirmation email when an interview is scheduled. Triggered
+    from /api/hr/invite right after the candidate email goes out.
+
+    Why this email exists: even though the calendar event is created on
+    HR's Outlook calendar via Graph API (so it's visible in their
+    calendar app), Microsoft does NOT email the calendar owner about
+    events they themselves create. To get an entry in HR's INBOX (which
+    is searchable, forwardable, and visible from any mail client) we
+    have to send a real email.
+
+    What this email is NOT: this is not a copy of the candidate's invite
+    email. HR doesn't need:
+      - The 6-digit access code (only the candidate enters it)
+      - The exam URL (HR doesn't take the test)
+      - The "begin assessment" CTA
+    It just needs the Teams URL, the candidate's name, and the time.
+
+    Same return contract as the other email helpers — (success, error)
+    tuple, never raises. Caller (the /invite route) treats this as
+    best-effort: invitation has already succeeded by the time this is
+    called, so a failure here just means HR has to find the meeting on
+    their calendar instead of in their inbox. Logged with [smtp] prefix.
+
+    Args:
+        hr_email:            Recipient — the HR who created the invite.
+        hr_name:             Display name used in the greeting.
+        candidate_name:      Shown in subject + body so HR can ID the interview.
+        candidate_email:     Shown in body for HR's reference.
+        valid_from:          Naive UTC datetime — meeting start.
+        valid_until:         Naive UTC datetime — meeting end.
+        teams_join_url:      The join URL produced by Graph's OnlineMeetings
+                             call. Embedded as the primary CTA button.
+        display_timezone:    IANA name (e.g. "Asia/Kolkata") for time rendering.
+        timezone_short_label: Friendly abbreviation ("IST", "PT") shown in
+                             parens after the time. Both optional — fall
+                             back to UTC if not provided.
+    """
+    if not _SMTP_CONFIGURED:
+        err = "SMTP not configured (missing env vars)"
+        print(f"[smtp] SKIPPED HR confirmation: {err}.")
+        return (False, err)
+
+    # Render the scheduled window using the same helper the candidate
+    # email uses — so HR sees the time formatted identically to what the
+    # candidate sees ("May 10, 2026 from 9:00 AM to 10:00 AM (IST)").
+    window_str = _format_window(
+        valid_from,
+        valid_until,
+        display_timezone or "UTC",
+        short_label=timezone_short_label,
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Interview scheduled with {candidate_name}"
+    msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_FROM_EMAIL))
+    msg["To"] = hr_email
+    msg["Reply-To"] = SMTP_FROM_EMAIL
+
+    msg.set_content(
+        _hr_confirmation_plain_text_body(
+            hr_name=hr_name,
+            candidate_name=candidate_name,
+            candidate_email=candidate_email,
+            window_str=window_str,
+            teams_join_url=teams_join_url,
+        )
+    )
+    msg.add_alternative(
+        _hr_confirmation_html_body(
+            hr_name=hr_name,
+            candidate_name=candidate_name,
+            candidate_email=candidate_email,
+            window_str=window_str,
+            teams_join_url=teams_join_url,
+        ),
+        subtype="html",
+    )
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            context = ssl.create_default_context(cafile=certifi.where())
+            server.starttls(context=context)
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+        print(f"[smtp] sent HR confirmation to {hr_email} (interview with {candidate_name})")
+        return (True, None)
+    except smtplib.SMTPAuthenticationError as e:
+        err = "SMTP authentication failed (check app password)"
+        print(f"[smtp] AUTH FAILED for {SMTP_USER}: {e}")
+        return (False, err)
+    except (smtplib.SMTPException, OSError, TimeoutError) as e:
+        err = f"{type(e).__name__}: {str(e)[:150]}"
+        print(f"[smtp] FAILED to send HR confirmation to {hr_email}: {err}")
+        return (False, err)
+
+
+def _hr_confirmation_plain_text_body(
+    *,
+    hr_name: str,
+    candidate_name: str,
+    candidate_email: str,
+    window_str: str,
+    teams_join_url: str,
+) -> str:
+    """
+    Plain-text fallback body for the HR confirmation email. Short and
+    scannable — HR opens this on mobile too. No access code or exam URL,
+    just the join link, candidate context, and time.
+    """
+    return (
+        f"Hi {hr_name},\n"
+        f"\n"
+        f"You have scheduled an interview through FluentiQ. The Microsoft\n"
+        f"Teams meeting has been created and added to your Outlook calendar.\n"
+        f"\n"
+        f"--------------------------------------------\n"
+        f"INTERVIEW DETAILS\n"
+        f"--------------------------------------------\n"
+        f"\n"
+        f"  Candidate: {candidate_name} ({candidate_email})\n"
+        f"  Scheduled: {window_str}\n"
+        f"\n"
+        f"--------------------------------------------\n"
+        f"JOIN THE TEAMS MEETING\n"
+        f"--------------------------------------------\n"
+        f"\n"
+        f"  {teams_join_url}\n"
+        f"\n"
+        f"You can also join from your Outlook calendar — the event has\n"
+        f"already been added there at the scheduled time.\n"
+        f"\n"
+        f"Best regards,\n"
+        f"FluentiQ\n"
+        f"\n"
+        f"---\n"
+        f"This is an automated confirmation. The candidate received a\n"
+        f"separate email with the test link and access code."
+    )
+
+
+def _hr_confirmation_html_body(
+    *,
+    hr_name: str,
+    candidate_name: str,
+    candidate_email: str,
+    window_str: str,
+    teams_join_url: str,
+) -> str:
+    """
+    HTML body for the HR confirmation email. Same visual language as
+    the other automated emails — navy header, white card, orange Teams
+    button. Distinct from the candidate email by NOT having a test URL,
+    access code, or instructions block.
+    """
+    return f"""\
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:24px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;background:#f3f4f6;line-height:1.6;">
+    <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+
+      <!-- Header band -->
+      <div style="background:#1e3a8a;padding:24px 32px;color:#ffffff;">
+        <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">Interview Scheduled</h1>
+        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">FluentiQ &middot; Stixis HR</p>
+      </div>
+
+      <!-- Body card -->
+      <div style="padding:32px;">
+
+        <p style="margin:0 0 16px 0;font-size:16px;color:#111827;">Hi {hr_name},</p>
+        <p style="margin:0 0 28px 0;font-size:15px;color:#374151;">
+          You have scheduled an interview through FluentiQ. The Microsoft
+          Teams meeting has been created and added to your Outlook calendar.
+        </p>
+
+        <!-- Interview details block -->
+        <div style="margin:0 0 28px 0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:18px 20px;">
+          <p style="margin:0 0 12px 0;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Interview Details</p>
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;">
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;width:100px;vertical-align:top;">Candidate</td>
+              <td style="padding:6px 0;font-size:14px;color:#111827;font-weight:600;">{candidate_name}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;vertical-align:top;">Email</td>
+              <td style="padding:6px 0;font-size:14px;color:#111827;word-break:break-all;">{candidate_email}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 0;font-size:13px;color:#6b7280;vertical-align:top;">Scheduled</td>
+              <td style="padding:6px 0;font-size:14px;color:#111827;font-weight:600;">{window_str}</td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- Teams join CTA -->
+        <div style="margin:0 0 16px 0;text-align:center;">
+          <a href="{teams_join_url}"
+             style="display:inline-block;background:#FF6B35;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:6px;font-size:16px;font-weight:600;letter-spacing:0.2px;">
+            Join Teams Meeting
+          </a>
+        </div>
+
+        <!-- Fallback link in case the button is stripped -->
+        <p style="margin:0 0 28px 0;font-size:12px;color:#6b7280;text-align:center;">
+          Button not working? Copy this link:<br>
+          <a href="{teams_join_url}" style="color:#1e3a8a;word-break:break-all;">{teams_join_url}</a>
+        </p>
+
+        <!-- Calendar reference -->
+        <div style="margin:0 0 24px 0;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:14px 18px;">
+          <p style="margin:0;font-size:13px;color:#1e40af;line-height:1.55;">
+            <strong>Already on your calendar:</strong> this meeting has been
+            added to your Outlook calendar at the scheduled time. You can
+            join from there too.
+          </p>
+        </div>
+
+        <!-- Signature -->
+        <p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>
+        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">FluentiQ</p>
+
+      </div>
+
+      <!-- Footer disclaimer -->
+      <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #e5e7eb;">
+        <p style="margin:0;font-size:11px;color:#9ca3af;text-align:center;line-height:1.5;">
+          This is an automated confirmation. The candidate received a separate
+          email with the test link and access code.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>"""
 
 
 def send_temp_password_email(
@@ -791,6 +1055,7 @@ def _build_invitation_message(
     include_reading: bool = True,
     include_writing: bool = True,
     include_speaking: bool = True,
+    teams_join_url: str | None = None,
 ) -> EmailMessage:
     """
     Build a multipart email with both plain-text and HTML parts. Modern email
@@ -804,6 +1069,11 @@ def _build_invitation_message(
     `timezone_short_label` is the friendly abbreviation ("IST", "PT") from
     the supported_timezones table. The route handler looks it up. If not
     provided, the email falls back to showing the raw IANA name.
+
+    `teams_join_url` adds a Teams CTA block above the existing Begin
+    Assessment button AND turns the INSTRUCTIONS list into a 4-step
+    sequence (with "Join the call" as step 1). When None, the email
+    renders exactly as it did before this feature shipped.
     """
     if regenerated:
         subject = "Action required: Your FluentiQ access code has been reset"
@@ -854,6 +1124,7 @@ def _build_invitation_message(
             sections_str=sections_str,
             sections_count=sections_count,
             include_speaking=include_speaking,
+            teams_join_url=teams_join_url,
         )
     )
     msg.add_alternative(
@@ -867,6 +1138,7 @@ def _build_invitation_message(
             sections_str=sections_str,
             sections_count=sections_count,
             include_speaking=include_speaking,
+            teams_join_url=teams_join_url,
         ),
         subtype="html",
     )
@@ -884,6 +1156,7 @@ def _plain_text_body(
     sections_str: str,
     sections_count: int,
     include_speaking: bool,
+    teams_join_url: str | None = None,
 ) -> str:
     """Plain-text fallback. Kept short and scannable on any email client."""
     if regenerated:
@@ -910,6 +1183,36 @@ def _plain_text_body(
         f"Stixis HR Team"
     ) if hr_name else "Best regards,\nStixis HR Team"
 
+    # Build the INSTRUCTIONS block. Two variants:
+    #   - With Teams URL (interview flow): 4 steps, "Join Teams call" first,
+    #     then test link, access code, begin.
+    #   - Without Teams URL (regenerate-code path or pre-feature behaviour):
+    #     original 3 steps unchanged.
+    if teams_join_url:
+        instructions_block = (
+            f"  1. Join the Microsoft Teams interview call at the scheduled time:\n"
+            f"     {teams_join_url}\n"
+            f"     The call will be recorded for review purposes.\n"
+            f"\n"
+            f"  2. Once on the call, click the link below to open the assessment:\n"
+            f"     {exam_url}\n"
+            f"\n"
+            f"  3. Enter the following 6-digit access code when prompted:\n"
+            f"     {access_code}\n"
+            f"\n"
+            f"  4. Review the instructions provided, then commence the assessment.\n"
+        )
+    else:
+        instructions_block = (
+            f"  1. Click the link below to open the assessment:\n"
+            f"     {exam_url}\n"
+            f"\n"
+            f"  2. Enter the following 6-digit access code when prompted:\n"
+            f"     {access_code}\n"
+            f"\n"
+            f"  3. Review the instructions provided, then commence the assessment.\n"
+        )
+
     return (
         f"Dear {candidate_name},\n"
         f"\n"
@@ -919,13 +1222,7 @@ def _plain_text_body(
         f"INSTRUCTIONS TO BEGIN THE ASSESSMENT\n"
         f"--------------------------------------------\n"
         f"\n"
-        f"  1. Click the link below to open the assessment:\n"
-        f"     {exam_url}\n"
-        f"\n"
-        f"  2. Enter the following 6-digit access code when prompted:\n"
-        f"     {access_code}\n"
-        f"\n"
-        f"  3. Review the instructions provided, then commence the assessment.\n"
+        f"{instructions_block}"
         f"\n"
         f"--------------------------------------------\n"
         f"ASSESSMENT DETAILS\n"
@@ -950,9 +1247,6 @@ def _plain_text_body(
         f"  - The assessment may be attempted only once\n"
         f"  - Three incorrect access code entries will lock the assessment\n"
         f"\n"
-        f"Should you encounter any technical issues or require assistance, "
-        f"please reply to this email and our team will respond promptly.\n"
-        f"\n"
         f"{signature}\n"
         f"\n"
         f"---\n"
@@ -971,6 +1265,7 @@ def _html_body(
     sections_str: str,
     sections_count: int,
     include_speaking: bool,
+    teams_join_url: str | None = None,
 ) -> str:
     """
     HTML version — uses inline styles only (most email clients strip <style>
@@ -980,13 +1275,14 @@ def _html_body(
     Structure (top to bottom):
       1. Header with title
       2. Greeting + intro paragraph
-      3. CTA button — primary action ("Start Test")
-      4. Access code box — secondary info needed at step 2
-      5. "How to start" — three numbered steps
-      6. "What to expect" — bullet list of test details
-      7. "Important" — expiry, single-use, lockout warning
-      8. Reply prompt + signature
-      9. Footer disclaimer
+      3. Teams meeting CTA block (only when teams_join_url is provided)
+      4. CTA button — primary action ("Begin Assessment")
+      5. Access code box — secondary info needed at step 2
+      6. "How to start" — three numbered steps (or four if Teams URL provided)
+      7. "What to expect" — bullet list of test details
+      8. "Important" — expiry, single-use, lockout warning
+      9. Reply prompt + signature
+     10. Footer disclaimer
     """
     if regenerated:
         intro = (
@@ -1007,6 +1303,59 @@ def _html_body(
         f'<strong>{window_str}</strong></li>'
         if window_str else ""
     )
+
+    # Teams CTA block — rendered only when teams_join_url is provided.
+    # Sits above the Begin Assessment button so candidates see "Join Teams"
+    # as the FIRST action, then "Begin Assessment" as the second. Orange
+    # button stands out from the navy Begin Assessment button so the two
+    # CTAs are visually distinct.
+    teams_cta_html = ""
+    if teams_join_url:
+        teams_cta_html = f"""
+        <div style="margin:0 0 28px 0;background:#f9fafb;border:1px solid #e5e7eb;border-left:4px solid #1e3a8a;border-radius:6px;padding:18px 20px;">
+          
+          <p style="margin:0 0 14px 0;font-size:14px;color:#374151;">
+            Join the Microsoft Teams call at the scheduled time. The call will be recorded for review purposes.
+          </p>
+          <div style="text-align:center;margin:0 0 12px 0;">
+            <a href="{teams_join_url}"
+               style="display:inline-block;background:#FF6B35;color:#ffffff;text-decoration:none;padding:12px 28px;border-radius:6px;font-size:15px;font-weight:600;">
+              Join Teams Meeting
+            </a>
+          </div>
+          <p style="margin:0;font-size:12px;color:#6b7280;text-align:center;">
+            Button not working? Copy this link:<br>
+            <a href="{teams_join_url}" style="color:#1e3a8a;word-break:break-all;">{teams_join_url}</a>
+          </p>
+        </div>
+        """
+
+    # INSTRUCTIONS ordered list. Two variants depending on Teams URL.
+    # With Teams URL: 4 steps with "Join the call" as step 1, the existing
+    # button/code/begin steps shifted to 2/3/4. The Teams URL is also
+    # surfaced as a clickable link inside the <li> so the candidate has
+    # the link in two places (the CTA block above AND inside the steps).
+    if teams_join_url:
+        instructions_ol = f"""
+        <ol style="margin:0 0 28px 20px;padding:0;font-size:14px;color:#374151;">
+          <li style="margin:0 0 10px 0;">
+            Join the Microsoft Teams interview call at the scheduled time:<br>
+            <a href="{teams_join_url}" style="color:#1e3a8a;word-break:break-all;">{teams_join_url}</a><br>
+            <span style="font-size:12px;color:#6b7280;">The call will be recorded for review purposes.</span>
+          </li>
+          <li style="margin:0 0 6px 0;">Once on the call, click the <strong>{cta_label}</strong> button above</li>
+          <li style="margin:0 0 6px 0;">Enter the 6-digit access code shown above</li>
+          <li style="margin:0;">Review the instructions provided, then commence the assessment</li>
+        </ol>
+        """
+    else:
+        instructions_ol = f"""
+        <ol style="margin:0 0 28px 20px;padding:0;font-size:14px;color:#374151;">
+          <li style="margin:0 0 6px 0;">Click the <strong>{cta_label}</strong> button above</li>
+          <li style="margin:0 0 6px 0;">Enter the 6-digit access code shown above</li>
+          <li style="margin:0;">Review the instructions provided, then commence the assessment</li>
+        </ol>
+        """
 
     # Signature — HR's name if known, otherwise just team name
     if hr_name:
@@ -1040,6 +1389,8 @@ def _html_body(
         <p style="margin:0 0 16px 0;font-size:16px;color:#111827;">Dear {candidate_name},</p>
         <p style="margin:0 0 28px 0;font-size:15px;color:#374151;">{intro}</p>
 
+        {teams_cta_html}
+
         <!-- CTA Button -->
         <div style="margin:0 0 28px 0;text-align:center;">
           <a href="{exam_url}"
@@ -1065,11 +1416,7 @@ def _html_body(
 
         <!-- Instructions to begin -->
         <h2 style="margin:32px 0 12px 0;font-size:14px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:0.5px;">Instructions to begin the assessment</h2>
-        <ol style="margin:0 0 28px 20px;padding:0;font-size:14px;color:#374151;">
-          <li style="margin:0 0 6px 0;">Click the <strong>{cta_label}</strong> button above</li>
-          <li style="margin:0 0 6px 0;">Enter the 6-digit access code shown above</li>
-          <li style="margin:0;">Review the instructions provided, then commence the assessment</li>
-        </ol>
+        {instructions_ol}
 
         <!-- Assessment details -->
         <h2 style="margin:0 0 12px 0;font-size:14px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:0.5px;">Assessment details</h2>
@@ -1090,11 +1437,6 @@ def _html_body(
             <li style="margin:0;">Three incorrect access code entries will <strong>lock the assessment</strong></li>
           </ul>
         </div>
-
-        <!-- Help / Reply prompt -->
-        <p style="margin:0 0 24px 0;font-size:14px;color:#374151;">
-          Should you encounter any technical issues or require assistance, please reply to this email and our team will respond promptly.
-        </p>
 
         <!-- Signature -->
         <div style="margin:0 0 0 0;">

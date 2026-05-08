@@ -31,3 +31,5 @@ tzdata
 # Report generation
 reportlab>=4.0           # PDF generation for single-candidate reports
 openpyxl>=3.1  
+msal
+requests

@@ -67,6 +67,7 @@ from email_service import (
     send_invitation_email,
     send_regenerated_code_email,
     send_temp_password_email,
+    send_hr_interview_confirmation_email,
 )
 from password_reset import (
     FORGOT_PASSWORD_GENERIC_RESPONSE,
@@ -74,6 +75,17 @@ from password_reset import (
     sleep_to_latency_floor,
     generate_temp_password,
 )
+# Teams meeting integration. The schedule_teams_meeting function is the
+# same one from the standalone TeamsIntegrationInterview project, dropped
+# into services/teams/. Called from create_invite below to schedule a
+# Teams meeting at the same window as the test, with the candidate AND
+# the HR who sent the invite added as attendees.
+#
+# cancel_teams_meeting is called from resend_invitation_email when HR
+# picks a new time window — we cancel the old meeting before creating
+# the new one so Microsoft's system doesn't accumulate orphan meetings
+# (and so any previously-shared join URLs stop working).
+from services.teams import schedule_teams_meeting, cancel_teams_meeting
 
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
@@ -623,6 +635,44 @@ def create_invite(
     settings_row = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
     settings = _settings_to_dict(settings_row)
 
+    # ── Schedule the Teams meeting BEFORE inserting the Invitation row ──────
+    # HR's requirement: every invitation must have a Teams meeting. So we
+    # call Microsoft Graph FIRST, only commit the Invitation row if the
+    # meeting was created successfully. On Teams API failure → no DB row,
+    # no email sent, HR sees a clear error and can retry. No half-created
+    # invitations.
+    #
+    # Window: the Teams meeting uses the SAME start/end as the test window
+    # so the candidate joins the call and takes the test live in that hour
+    # while HR observes.
+    #
+    # schedule_teams_meeting takes start_time as an ISO-8601 string and
+    # computes end_time as start + duration_minutes. We pass the test
+    # window's duration explicitly so the meeting matches exactly even
+    # if HR picked a non-default window length.
+    window_seconds = (payload.valid_until - payload.valid_from).total_seconds()
+    duration_minutes = max(15, int(window_seconds / 60))  # Graph requires >=15
+    try:
+        teams_result = schedule_teams_meeting(
+            subject=f"FluentiQ Interview – {candidate_name}",
+            participant_name=candidate_name,
+            participant_email=payload.candidate_email.lower(),
+            start_time=payload.valid_from.isoformat(),
+            duration_minutes=duration_minutes,
+            hr_name=hr.name,
+            hr_email=hr.email,
+        )
+    except RuntimeError as exc:
+        # schedule_teams_meeting raises RuntimeError for any failure —
+        # missing config, token failure, or Graph API error. The message
+        # is safe to surface to HR (no secrets, no raw stack traces).
+        # 502 because the failure is upstream of FluentiQ.
+        print(f"[teams] meeting creation failed: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not create Teams meeting: {exc}",
+        )
+
     inv = Invitation(
         token=token,
         candidate_email=payload.candidate_email.lower(),
@@ -647,6 +697,11 @@ def create_invite(
         include_reading=payload.include_reading,
         include_writing=payload.include_writing,
         include_speaking=payload.include_speaking,
+        # Teams meeting fields populated above. Status 'created' here
+        # because we successfully got past schedule_teams_meeting.
+        teams_meeting_id=teams_result.get("meeting_id"),
+        teams_join_url=teams_result.get("join_url"),
+        teams_meeting_status="created",
     )
     db.add(inv)
     db.commit()
@@ -670,6 +725,10 @@ def create_invite(
         include_reading=inv.include_reading,
         include_writing=inv.include_writing,
         include_speaking=inv.include_speaking,
+        # Teams meeting URL — surfaced in the email body so the candidate
+        # has the join link in their inbox. Same URL also goes on the
+        # exam start page (separate frontend change, see deployment guide).
+        teams_join_url=inv.teams_join_url,
     )
 
     # Persist the email send result so the dashboard can surface failures to HR
@@ -683,6 +742,43 @@ def create_invite(
         inv.email_status = "failed"
         inv.email_error = email_err
     db.commit()
+
+    # ── HR confirmation email ──────────────────────────────────────────
+    # Microsoft Graph creates the calendar event on HR's mailbox, but
+    # does NOT also send HR an email about that event (Microsoft's
+    # design assumes you don't want to email yourself). We send a
+    # separate FluentiQ-branded email so HR has an INBOX entry they
+    # can search later — the calendar entry alone isn't searchable
+    # from the inbox view.
+    #
+    # Best-effort: invitation has already succeeded by the time we get
+    # here. If this email fails, HR just relies on the calendar event
+    # + the dashboard for the Teams URL. No retry, no DB column for
+    # this email's status (the candidate-facing email is the one that
+    # matters for the invitation lifecycle).
+    #
+    # Only sent when teams_join_url is present — without a Teams URL,
+    # there's nothing this email would tell HR that they don't already
+    # have on the dashboard.
+    if inv.teams_join_url:
+        hr_confirm_ok, hr_confirm_err = send_hr_interview_confirmation_email(
+            hr_email=hr.email,
+            hr_name=hr.name,
+            candidate_name=inv.candidate_name,
+            candidate_email=inv.candidate_email,
+            valid_from=inv.valid_from,
+            valid_until=inv.expires_at,
+            teams_join_url=inv.teams_join_url,
+            display_timezone=inv.display_timezone,
+            timezone_short_label=tz_row.short_label,
+        )
+        if not hr_confirm_ok:
+            # Log but don't fail the request. HR still has the calendar
+            # event + dashboard; the missing inbox copy is a soft loss.
+            print(
+                f"[hr-confirm] FAILED to send confirmation to {hr.email}: "
+                f"{hr_confirm_err or 'unknown'}"
+            )
 
     # Audit log line — useful for debugging and proves the invite was created
     # even when email delivery silently fails.
@@ -703,6 +799,11 @@ def create_invite(
         expires_at=inv.expires_at,
         email_status=inv.email_status,
         email_error=inv.email_error,
+        # Teams meeting URL surfaced in the post-invite modal so HR can
+        # copy/paste it if needed (e.g. share via Slack as backup to the
+        # email). Same field is persisted on the row so the dashboard
+        # candidate detail can show it later too.
+        teams_join_url=inv.teams_join_url,
     )
 
 
@@ -748,6 +849,13 @@ def regenerate_code(
 
     # Notify the candidate via email that their access code was reset. Same
     # best-effort policy: regen is recorded in the DB regardless of SMTP outcome.
+    #
+    # The Teams meeting URL is included in this email too — same URL stored
+    # on the row at create time. Regenerate-code does NOT create a new Teams
+    # meeting (the interview is the same, only the access code changed), so
+    # the candidate joins the same call they were already invited to. They
+    # need the URL again because their original invite email might be lost
+    # in the inbox by the time this code-reset email lands.
     email_ok, email_err = send_regenerated_code_email(
         candidate_email=inv.candidate_email,
         candidate_name=inv.candidate_name,
@@ -761,6 +869,7 @@ def regenerate_code(
         include_reading=inv.include_reading,
         include_writing=inv.include_writing,
         include_speaking=inv.include_speaking,
+        teams_join_url=inv.teams_join_url,
     )
 
     # Update email tracking. Regenerate replaces the previous status entirely:
@@ -866,7 +975,26 @@ def resend_invitation_email(
 
     What changes:
       - valid_from, expires_at, display_timezone
+      - teams_meeting_id, teams_join_url — a fresh Teams meeting is
+        created at the new time and the old one is cancelled
       - email_status / email_error from the new send
+
+    Why we recreate the Teams meeting (not just update the existing one):
+    Microsoft Graph's /onlineMeetings PATCH endpoint exists but doesn't
+    reliably reschedule pre-existing meetings — Teams admins have
+    reported the start/end fields not always being respected. Creating a
+    new meeting at the new time is the documented, reliable path.
+
+    Order of operations:
+      1. Validate window + timezone (raises 400 on bad input)
+      2. Cancel the old Teams meeting (best-effort — failure logged
+         but doesn't block the resend)
+      3. Create a new Teams meeting at the new time (hard-fail with
+         502 if Graph rejects this — we abort and the row stays in its
+         pre-resend state, so HR can retry)
+      4. Commit the row with new window + new Teams fields
+      5. Send the email with the new Teams URL
+      6. Commit the email status
 
     Refuses to resend after submission (the test is over). Tenancy:
     404 if not owned by this HR.
@@ -891,6 +1019,51 @@ def resend_invitation_email(
     # with the list of valid options on miss.
     _resolve_timezone(db, payload.timezone)
 
+    # ── Cancel the existing Teams meeting (best-effort) ─────────────────
+    # Why this comes BEFORE creating the new one: if cancel succeeds and
+    # create fails, the candidate's old URL still works (worst case: they
+    # join a meeting at the old time on their old calendar). If we
+    # reversed the order and create succeeded but cancel failed, we'd
+    # have two parallel meetings — fine, but messier.
+    #
+    # cancel_teams_meeting NEVER raises — returns False on failure and
+    # we proceed regardless. A no-op when teams_meeting_id is None
+    # (legacy invitations from before Teams integration shipped).
+    if inv.teams_meeting_id:
+        cancelled = cancel_teams_meeting(inv.teams_meeting_id)
+        if not cancelled:
+            print(
+                f"[teams] WARN: failed to cancel old Teams meeting "
+                f"{inv.teams_meeting_id[:24]}... for invitation {inv.id}. "
+                f"Proceeding with resend; old meeting may remain orphaned."
+            )
+
+    # ── Create a new Teams meeting at the new window ────────────────────
+    # Same logic as create_invite. On Graph API failure, raise 502 and
+    # abort — DON'T update the row. HR sees a clear error and can retry.
+    # The old meeting was already cancelled (or cancel attempt logged),
+    # but the row still reflects the OLD window + OLD teams URL, which
+    # is misleading. Trade-off: this is a rare failure path and HR can
+    # see in the dashboard that the resend didn't take effect.
+    new_window_seconds = (payload.valid_until - payload.valid_from).total_seconds()
+    new_duration_minutes = max(15, int(new_window_seconds / 60))
+    try:
+        new_teams_result = schedule_teams_meeting(
+            subject=f"FluentiQ Interview – {inv.candidate_name}",
+            participant_name=inv.candidate_name,
+            participant_email=inv.candidate_email,
+            start_time=payload.valid_from.isoformat(),
+            duration_minutes=new_duration_minutes,
+            hr_name=hr.name,
+            hr_email=hr.email,
+        )
+    except RuntimeError as exc:
+        print(f"[teams] resend meeting creation failed: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not create new Teams meeting for resend: {exc}",
+        )
+
     # Convert to naive UTC at the boundary, matching invite-create. The
     # rest of the codebase compares naive UTC against naive UTC, so we
     # MUST strip tzinfo here even though the wire format carries it.
@@ -900,12 +1073,19 @@ def resend_invitation_email(
     inv.valid_from = new_valid_from
     inv.expires_at = new_valid_until
     inv.display_timezone = payload.timezone
+    # Replace the Teams meeting fields with the freshly-created meeting's
+    # data. The OLD teams_meeting_id / teams_join_url are now stale (we
+    # cancelled the old meeting above), so overwriting is safe.
+    inv.teams_meeting_id = new_teams_result.get("meeting_id")
+    inv.teams_join_url = new_teams_result.get("join_url")
+    inv.teams_meeting_status = "created"
 
-    # Commit the window update FIRST. If the email send fails after this,
-    # the row still reflects what HR intended — they'll see the new
-    # window in the candidate-detail panel and can retry resend. The
-    # opposite ordering (send first) would be worse: the email would
-    # advertise a window the row doesn't reflect if the commit failed.
+    # Commit the window + Teams update FIRST. If the email send fails
+    # after this, the row still reflects what HR intended — they'll see
+    # the new window AND the new Teams URL in the candidate-detail panel
+    # and can retry resend. The opposite ordering (send first) would be
+    # worse: the email would advertise a window/URL the row doesn't
+    # reflect if the commit failed.
     db.commit()
 
     exam_url = f"{APP_BASE_URL}/exam/{inv.token}"
@@ -927,6 +1107,10 @@ def resend_invitation_email(
         include_reading=inv.include_reading,
         include_writing=inv.include_writing,
         include_speaking=inv.include_speaking,
+        # NEW Teams URL from the meeting we just created — replaces the
+        # old URL the candidate had. Their old emails advertise a dead
+        # URL but the latest email tells the truth.
+        teams_join_url=inv.teams_join_url,
     )
 
     # Update tracking columns and commit again. Resend replaces the

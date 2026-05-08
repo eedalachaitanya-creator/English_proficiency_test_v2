@@ -244,6 +244,30 @@ class Invitation(Base):
     include_writing = Column(Boolean, default=True, nullable=False)
     include_speaking = Column(Boolean, default=True, nullable=False)
 
+    # Teams meeting fields. See migration 9b4e7f1a2c3d for the full
+    # rationale. All three are nullable so legacy rows created before
+    # this feature stay valid. New rows are guaranteed to populate
+    # them because the route handler fails the invite if Teams API
+    # errors — but historical invitations leave them NULL, and the
+    # dashboard / email templates check for NULL before rendering
+    # any Teams-specific UI.
+    #
+    #   teams_meeting_id      Graph API meeting object id (used for
+    #                         future lookups, recording retrieval,
+    #                         deletion). Up to ~512 chars to be safe.
+    #   teams_join_url        URL the candidate and HR click to join.
+    #                         Microsoft URLs can be quite long with
+    #                         tenant + meeting + context query strings.
+    #   teams_meeting_status  NULL = not attempted (legacy row),
+    #                         'created' = Teams call succeeded,
+    #                         'failed'  = Teams call errored (kept
+    #                         here for dashboards / future retry,
+    #                         even though current behavior fails the
+    #                         invitation entirely on Teams error).
+    teams_meeting_id = Column(String(512), nullable=True)
+    teams_join_url = Column(String(2048), nullable=True)
+    teams_meeting_status = Column(String(20), nullable=True)
+
     hr = relationship("HRAdmin", back_populates="invitations")
     passage = relationship("Passage")
     writing_topic = relationship("WritingTopic")
