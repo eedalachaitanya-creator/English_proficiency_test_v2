@@ -477,6 +477,7 @@ def list_hr_candidates(
                 include_speaking=inv.include_speaking,
                 email_status=inv.email_status,
                 email_error=inv.email_error if inv.email_status == "failed" else None,
+                expires_at=inv.expires_at,
             )
         )
 
