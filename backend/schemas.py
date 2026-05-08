@@ -465,7 +465,9 @@ class ScoreSummary(BaseModel):
     #   "failed"  — SMTP send failed; HR action needed (see email_error)
     email_status: str = "pending"
     email_error: Optional[str] = None    # short reason if email_status == "failed"
-
+    # Window expiry — exposed so the frontend can compute "Not Attended"
+    # status for unsubmitted invitations whose window has passed.
+    expires_at: datetime
 
 class PaginatedScoreSummary(BaseModel):
     """Wrapper used by GET /api/admin/hrs/{hr_id}/candidates so an admin

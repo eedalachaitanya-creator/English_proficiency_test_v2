@@ -583,6 +583,29 @@ def create_invite(
     # than 60 min (the test budget). Frontend pre-flights the same checks but
     # we re-validate here as the source of truth.
     _validate_window(payload.valid_from, payload.valid_until)
+
+    # Duplicate-invitation guard. If this candidate email already has a
+    candidate_email_lower = payload.candidate_email.lower()
+    existing = (
+        db.query(Invitation)
+        .filter(
+            Invitation.candidate_email == candidate_email_lower,
+            Invitation.submitted_at.is_(None),
+            Invitation.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+    if existing:
+        existing_hr = db.query(HRAdmin).filter(HRAdmin.id == existing.hr_admin_id).first()
+        existing_hr_name = existing_hr.name if existing_hr else "another HR"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This candidate already has a pending invitation "
+                f"from {existing_hr_name}. Wait until the existing invitation "
+                f"is completed or expires before sending a new one."
+            ),
+        )
     # Persist as naive UTC to match the column type and rest of the codebase.
     valid_from = _to_naive_utc(payload.valid_from)
     expires_at = _to_naive_utc(payload.valid_until)
@@ -971,6 +994,7 @@ def list_results(hr: HRAdmin = Depends(require_hr_strict), db: Session = Depends
                 # and-braces it here so a stale error never leaks.
                 email_status=inv.email_status,
                 email_error=inv.email_error if inv.email_status == "failed" else None,
+                expires_at=inv.expires_at
             )
         )
     return out
