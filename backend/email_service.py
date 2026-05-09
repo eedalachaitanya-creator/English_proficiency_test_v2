@@ -80,6 +80,48 @@ def is_configured() -> bool:
     return _SMTP_CONFIGURED
 
 
+def _friendly_smtp_error(exc: BaseException) -> str:
+    """Translate a low-level SMTP/network exception into a message HR can
+    actually act on. The full exception class + message are still printed to
+    the server log with the [smtp] prefix for debugging.
+
+    Without this, the catch-all branch surfaced things like
+        gaierror: [Errno -3] Temporary failure in name resolution
+    directly into the candidate-detail UI — accurate but useless to a non-
+    engineer (and immediately raised "is the app broken?" tickets).
+    """
+    # DNS resolution failure — the box running the backend cannot resolve
+    # SMTP_HOST. Almost always a server/network issue (no internet egress,
+    # broken /etc/resolv.conf, captive portal), not anything a code change
+    # would fix. Tell HR to check with their IT, not the app developer.
+    if isinstance(exc, socket.gaierror):
+        return (
+            "Could not reach the email server (DNS lookup failed). "
+            "The server hosting this app may not have internet access — "
+            "check with your IT/network admin."
+        )
+    if isinstance(exc, ConnectionRefusedError):
+        return (
+            "Email server refused the connection. "
+            "Check that SMTP_HOST and SMTP_PORT are correct."
+        )
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "Email server did not respond within 15 seconds."
+    if isinstance(exc, ssl.SSLError):
+        return "Could not establish a secure connection to the email server."
+    if isinstance(exc, smtplib.SMTPServerDisconnected):
+        return "Email server disconnected unexpectedly. Try again."
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return "The recipient email address was rejected by the server."
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "The sender address was rejected by the server."
+    if isinstance(exc, smtplib.SMTPDataError):
+        return "Email server rejected the message contents."
+    # Catch-all for SMTPException / other OSErrors. Stays generic on purpose
+    # — the server log has the precise type + message for debugging.
+    return "Could not send email (network or server error)."
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -168,7 +210,10 @@ def send_invitation_email(
         # Catch-all for network errors, server errors, malformed responses, etc.
         # OSError covers ConnectionRefusedError, socket.timeout, DNS failures.
         # Cap the error message at 150 chars so we don't blow up the DB column.
-        err = f"{type(e).__name__}: {str(e)[:150]}"
+        err = _friendly_smtp_error(e)
+        # Log the raw class + message for debugging — only the friendly
+        # version is surfaced via the API to the HR dashboard.
+        print(f"[smtp] raw error: {type(e).__name__}: {str(e)[:200]}")
         print(f"[smtp] FAILED to send to {candidate_email}: {err}")
         return (False, err)
 
@@ -244,7 +289,10 @@ def send_regenerated_code_email(
         print(f"[smtp] AUTH FAILED for {SMTP_USER}: {e}")
         return (False, err)
     except (smtplib.SMTPException, OSError, TimeoutError) as e:
-        err = f"{type(e).__name__}: {str(e)[:150]}"
+        err = _friendly_smtp_error(e)
+        # Log the raw class + message for debugging — only the friendly
+        # version is surfaced via the API to the HR dashboard.
+        print(f"[smtp] raw error: {type(e).__name__}: {str(e)[:200]}")
         print(f"[smtp] FAILED to send to {candidate_email}: {err}")
         return (False, err)
 
@@ -353,7 +401,10 @@ def send_hr_interview_confirmation_email(
         print(f"[smtp] AUTH FAILED for {SMTP_USER}: {e}")
         return (False, err)
     except (smtplib.SMTPException, OSError, TimeoutError) as e:
-        err = f"{type(e).__name__}: {str(e)[:150]}"
+        err = _friendly_smtp_error(e)
+        # Log the raw class + message for debugging — only the friendly
+        # version is surfaced via the API to the HR dashboard.
+        print(f"[smtp] raw error: {type(e).__name__}: {str(e)[:200]}")
         print(f"[smtp] FAILED to send HR confirmation to {hr_email}: {err}")
         return (False, err)
 
@@ -587,7 +638,10 @@ def send_temp_password_email(
         print(f"[smtp] AUTH FAILED for {SMTP_USER}: {e}")
         return (False, err)
     except (smtplib.SMTPException, OSError, TimeoutError) as e:
-        err = f"{type(e).__name__}: {str(e)[:150]}"
+        err = _friendly_smtp_error(e)
+        # Log the raw class + message for debugging — only the friendly
+        # version is surfaced via the API to the HR dashboard.
+        print(f"[smtp] raw error: {type(e).__name__}: {str(e)[:200]}")
         print(f"[smtp] FAILED to send forgot-password to {hr_email}: {err}")
         return (False, err)
 
@@ -801,7 +855,10 @@ def send_user_welcome_email(
         print(f"[smtp] AUTH FAILED for {SMTP_USER}: {e}")
         return (False, err)
     except (smtplib.SMTPException, OSError, TimeoutError) as e:
-        err = f"{type(e).__name__}: {str(e)[:150]}"
+        err = _friendly_smtp_error(e)
+        # Log the raw class + message for debugging — only the friendly
+        # version is surfaced via the API to the HR dashboard.
+        print(f"[smtp] raw error: {type(e).__name__}: {str(e)[:200]}")
         print(f"[smtp] FAILED to send {role_label} welcome to {user_email}: {err}")
         return (False, err)
 
