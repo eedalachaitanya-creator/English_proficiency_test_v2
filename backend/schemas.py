@@ -8,6 +8,41 @@ what fields to expose to the client (e.g., never expose `correct_answer`).
 from datetime import datetime
 from typing import Literal, Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+
+# ============================================================
+# Shared password-policy helper
+# ------------------------------------------------------------
+# Any "set a new password" surface (HR/admin change-password,
+# admin-creates-user) routes through this single function so the
+# rules stay in one place. The frontend's hint message and
+# client-side validator mirror these exact rules.
+# ============================================================
+def _enforce_password_complexity(v: str) -> str:
+    """Reject passwords that miss any of the four character classes.
+
+    Rules: at least 1 uppercase, 1 lowercase, 1 digit, 1 non-alphanumeric
+    (excluding whitespace, which is rejected by a separate validator
+    that runs before this one). Builds the error message dynamically
+    so the user sees only the rules they're missing — clearer than a
+    blanket "password doesn't meet policy".
+    """
+    missing: list[str] = []
+    if not any(c.isupper() for c in v):
+        missing.append("1 uppercase letter")
+    if not any(c.islower() for c in v):
+        missing.append("1 lowercase letter")
+    if not any(c.isdigit() for c in v):
+        missing.append("1 number")
+    if not any((not c.isalnum()) and (not c.isspace()) for c in v):
+        missing.append("1 special character")
+    if missing:
+        raise PydanticCustomError(
+            "password_complexity",
+            "Password must contain at least " + ", ".join(missing) + ".",
+        )
+    return v
 
 
 # ============================================================
@@ -93,8 +128,23 @@ class ChangePasswordRequest(BaseModel):
         accepting a ChangePasswordRequest is protected without each
         route re-checking."""
         if any(c.isspace() for c in v):
-            raise ValueError("Password cannot contain spaces or other whitespace.")
+            # PydanticCustomError keeps the user-facing `msg` exactly as
+            # given, without Pydantic's automatic "Value error, " prefix
+            # that would otherwise surface in the FastAPI 422 response.
+            raise PydanticCustomError(
+                "password_whitespace",
+                "Password cannot contain spaces.",
+            )
         return v
+
+    @field_validator("new_password")
+    @classmethod
+    def enforce_complexity(cls, v: str) -> str:
+        """Apply the shared complexity policy. Runs after reject_whitespace
+        because Pydantic V2 short-circuits on the first failing validator,
+        which keeps "Password cannot contain spaces." as the most specific
+        message when both rules fail."""
+        return _enforce_password_complexity(v)
 
 
 # ============================================================
@@ -173,8 +223,20 @@ class UserCreateByAdminRequest(BaseModel):
         """Same protection as ChangePasswordRequest.new_password —
         whitespace is not allowed anywhere in the password."""
         if any(c.isspace() for c in v):
-            raise ValueError("Password cannot contain spaces or other whitespace.")
+            # PydanticCustomError keeps the user-facing `msg` exactly as
+            # given, without Pydantic's automatic "Value error, " prefix
+            # that would otherwise surface in the FastAPI 422 response.
+            raise PydanticCustomError(
+                "password_whitespace",
+                "Password cannot contain spaces.",
+            )
         return v
+
+    @field_validator("password")
+    @classmethod
+    def enforce_complexity(cls, v: str) -> str:
+        """Same complexity policy as ChangePasswordRequest.new_password."""
+        return _enforce_password_complexity(v)
 
 
 class UserCreateByAdminResponse(BaseModel):

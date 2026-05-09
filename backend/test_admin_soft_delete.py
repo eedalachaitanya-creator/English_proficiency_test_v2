@@ -139,7 +139,7 @@ def test_deleted_hr_hidden_from_users_list():
 
 def test_deleted_hr_cannot_login():
     admin = _make_user("admin")
-    hr = _make_user("hr", password="hrpass1234")
+    hr = _make_user("hr", password="Hrpass1234!")
     try:
         admin_client = _login_admin_client(admin.email)
         admin_client.delete(f"/api/admin/users/{hr.id}")
@@ -149,7 +149,7 @@ def test_deleted_hr_cannot_login():
         c = TestClient(app)
         r = c.post("/api/hr/login", json={
             "email": hr.email,
-            "password": "hrpass1234",
+            "password": "Hrpass1234!",
         })
         assert r.status_code == 401
     finally:
@@ -161,10 +161,10 @@ def test_existing_jwt_invalidated_after_delete():
     """A JWT that was minted before the HR was deleted should stop
     working immediately — auth.py filters deleted rows."""
     admin = _make_user("admin")
-    hr = _make_user("hr", password="hrpass1234")
+    hr = _make_user("hr", password="Hrpass1234!")
     try:
         # HR logs in and gets a fresh JWT.
-        hr_client = _login_hr_client(hr.email, password="hrpass1234")
+        hr_client = _login_hr_client(hr.email, password="Hrpass1234!")
         # Confirm the token works before deletion.
         r = hr_client.get("/api/hr/me")
         assert r.status_code == 200
@@ -198,7 +198,7 @@ def test_email_reusable_after_soft_delete():
             r = c.post("/api/admin/users", json={
                 "name": "Reborn HR",
                 "email": reused_email,
-                "password": "rebornpw",
+                "password": "Rebornpw1!",
                 "role": "hr",
             })
         assert r.status_code == 201, r.text

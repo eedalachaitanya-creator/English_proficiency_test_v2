@@ -59,7 +59,7 @@ def test_change_password_happy_path():
         c = _login_client(hr.email, "currentPass123")
         r = c.post(
             "/api/hr/change-password",
-            json={"current_password": "currentPass123", "new_password": "newPass456"},
+            json={"current_password": "currentPass123", "new_password": "newPass456!"},
         )
         assert r.status_code == 200, r.text
 
@@ -67,7 +67,7 @@ def test_change_password_happy_path():
         db = SessionLocal()
         refreshed = db.query(HRAdmin).filter(HRAdmin.id == hr.id).first()
         db.close()
-        assert verify_password("newPass456", refreshed.password_hash)
+        assert verify_password("newPass456!", refreshed.password_hash)
         assert not verify_password("currentPass123", refreshed.password_hash)
     finally:
         _drop(hr.id)
@@ -81,7 +81,7 @@ def test_change_password_session_survives():
         c = _login_client(hr.email, "currentPass123")
         c.post(
             "/api/hr/change-password",
-            json={"current_password": "currentPass123", "new_password": "newPass456"},
+            json={"current_password": "currentPass123", "new_password": "newPass456!"},
         )
         # Use the same client (same cookie jar) — should still be authed.
         r = c.get("/api/hr/me")
@@ -101,7 +101,7 @@ def test_change_password_wrong_current_rejected():
         c = _login_client(hr.email, "currentPass123")
         r = c.post(
             "/api/hr/change-password",
-            json={"current_password": "WRONG", "new_password": "newPass456"},
+            json={"current_password": "WRONG", "new_password": "newPass456!"},
         )
         assert r.status_code == 401, r.text
 
@@ -171,7 +171,7 @@ def test_change_password_no_session_rejected():
     c = TestClient(app)
     r = c.post(
         "/api/hr/change-password",
-        json={"current_password": "x", "new_password": "newPass456"},
+        json={"current_password": "x", "new_password": "newPass456!"},
     )
     assert r.status_code == 401
 
@@ -200,7 +200,7 @@ def test_change_password_admin_cannot_use_hr_endpoint():
         # Try to use the HR change-password endpoint with the admin session.
         r = c.post(
             "/api/hr/change-password",
-            json={"current_password": "adminpass", "new_password": "newPass456"},
+            json={"current_password": "adminpass", "new_password": "newPass456!"},
         )
         assert r.status_code == 401, r.text
     finally:
@@ -241,14 +241,14 @@ def test_admin_change_password_happy_path():
         c = _login_admin(admin.email, "adminOriginal1")
         r = c.post(
             "/api/admin/change-password",
-            json={"current_password": "adminOriginal1", "new_password": "adminNew456"},
+            json={"current_password": "adminOriginal1", "new_password": "adminNew456!"},
         )
         assert r.status_code == 200, r.text
         # Verify hash actually changed
         db = SessionLocal()
         refreshed = db.query(HRAdmin).filter(HRAdmin.id == admin.id).first()
         db.close()
-        assert verify_password("adminNew456", refreshed.password_hash)
+        assert verify_password("adminNew456!", refreshed.password_hash)
         assert not verify_password("adminOriginal1", refreshed.password_hash)
     finally:
         _drop(admin.id)
@@ -261,7 +261,7 @@ def test_admin_change_password_wrong_current_rejected():
         c = _login_admin(admin.email, "adminOriginal1")
         r = c.post(
             "/api/admin/change-password",
-            json={"current_password": "WRONG", "new_password": "adminNew456"},
+            json={"current_password": "WRONG", "new_password": "adminNew456!"},
         )
         assert r.status_code == 401
     finally:
@@ -273,7 +273,7 @@ def test_admin_change_password_no_session_rejected():
     c = TestClient(app)
     r = c.post(
         "/api/admin/change-password",
-        json={"current_password": "x", "new_password": "adminNew456"},
+        json={"current_password": "x", "new_password": "adminNew456!"},
     )
     assert r.status_code == 401
 
@@ -286,7 +286,7 @@ def test_admin_change_password_hr_cannot_use_admin_endpoint():
         c = _login_client(hr.email, "hrpass123")
         r = c.post(
             "/api/admin/change-password",
-            json={"current_password": "hrpass123", "new_password": "newPass456"},
+            json={"current_password": "hrpass123", "new_password": "newPass456!"},
         )
         assert r.status_code == 401, r.text
     finally:
@@ -329,7 +329,7 @@ def test_change_password_clears_must_change_password_flag_hr():
         c = _login_client(hr.email, "tempFromEmail1")
         r = c.post(
             "/api/hr/change-password",
-            json={"current_password": "tempFromEmail1", "new_password": "permPass789"},
+            json={"current_password": "tempFromEmail1", "new_password": "permPass789!"},
         )
         assert r.status_code == 200, r.text
         assert _must_change_for(hr.id) is False, (
@@ -352,7 +352,7 @@ def test_change_password_clears_must_change_password_flag_admin():
         c = _login_admin(admin.email, "tempAdminFromEmail1")
         r = c.post(
             "/api/admin/change-password",
-            json={"current_password": "tempAdminFromEmail1", "new_password": "permAdmin789"},
+            json={"current_password": "tempAdminFromEmail1", "new_password": "permAdmin789!"},
         )
         assert r.status_code == 200, r.text
         assert _must_change_for(admin.id) is False

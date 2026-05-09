@@ -94,7 +94,7 @@ def test_create_hr_via_users_endpoint():
             r = c.post("/api/admin/users", json={
                 "name": "Alice HR",
                 "email": new_email,
-                "password": "alicepw1",
+                "password": "Alicepw1!",
                 "role": "hr",
             })
         assert r.status_code == 201, r.text
@@ -109,7 +109,7 @@ def test_create_hr_via_users_endpoint():
         kwargs = mock_email.call_args.kwargs
         assert kwargs["role"] == "hr"
         assert kwargs["user_email"] == new_email
-        assert kwargs["plaintext_password"] == "alicepw1"
+        assert kwargs["plaintext_password"] == "Alicepw1!"
         # DB row exists with role=hr.
         db = SessionLocal()
         row = db.query(HRAdmin).filter(HRAdmin.email == new_email).first()
@@ -130,7 +130,7 @@ def test_create_admin_via_users_endpoint():
             r = c.post("/api/admin/users", json={
                 "name": "Bob Admin",
                 "email": new_email,
-                "password": "bobpw1234",
+                "password": "Bobpw1234!",
                 "role": "admin",
             })
         assert r.status_code == 201, r.text
@@ -159,7 +159,7 @@ def test_role_defaults_to_hr_when_omitted():
             r = c.post("/api/admin/users", json={
                 "name": "Default Role",
                 "email": new_email,
-                "password": "defaultpw",
+                "password": "Defaultpw1!",
             })
         assert r.status_code == 201, r.text
         assert r.json()["role"] == "hr"
@@ -180,7 +180,7 @@ def test_create_user_rejects_email_already_used_by_hr():
         r = c.post("/api/admin/users", json={
             "name": "Dup HR",
             "email": existing_hr.email,
-            "password": "duppw1234",
+            "password": "Duppw1234!",
             "role": "admin",
         })
         assert r.status_code == 409
@@ -198,7 +198,7 @@ def test_create_user_rejects_email_already_used_by_admin():
         r = c.post("/api/admin/users", json={
             "name": "Dup Admin",
             "email": existing_admin.email,
-            "password": "duppw1234",
+            "password": "Duppw1234!",
             "role": "hr",
         })
         assert r.status_code == 409
@@ -219,7 +219,7 @@ def test_create_user_rejects_invalid_role():
         r = c.post("/api/admin/users", json={
             "name": "Bad Role",
             "email": f"bad-role-{secrets.token_hex(4)}@example.com",
-            "password": "badrole12",
+            "password": "Badrole12!",
             "role": "superuser",
         })
         assert r.status_code == 422
@@ -251,7 +251,7 @@ def test_create_user_unauthenticated_returns_401():
     r = c.post("/api/admin/users", json={
         "name": "No Auth",
         "email": f"no-auth-{secrets.token_hex(4)}@example.com",
-        "password": "noauth123",
+        "password": "Noauth123!",
         "role": "hr",
     })
     assert r.status_code == 401
@@ -266,7 +266,7 @@ def test_create_user_hr_token_returns_401():
         r = c.post("/api/admin/users", json={
             "name": "HR Bypass",
             "email": f"hr-bypass-{secrets.token_hex(4)}@example.com",
-            "password": "hrbypass1",
+            "password": "Hrbypass1!",
             "role": "hr",
         })
         # require_admin_strict treats a non-admin session the same as no
@@ -285,7 +285,7 @@ def test_create_user_must_change_admin_returns_403():
         r = c.post("/api/admin/users", json={
             "name": "Forced Change",
             "email": f"forced-change-{secrets.token_hex(4)}@example.com",
-            "password": "forced123",
+            "password": "Forced123!",
             "role": "hr",
         })
         assert r.status_code == 403
