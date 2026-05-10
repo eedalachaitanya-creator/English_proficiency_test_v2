@@ -1073,6 +1073,7 @@ def resend_invitation_email(
     inv.valid_from = new_valid_from
     inv.expires_at = new_valid_until
     inv.display_timezone = payload.timezone
+    inv.start_count = 0
     # Replace the Teams meeting fields with the freshly-created meeting's
     # data. The OLD teams_meeting_id / teams_join_url are now stale (we
     # cancelled the old meeting above), so overwriting is safe.
