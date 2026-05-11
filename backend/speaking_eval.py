@@ -773,6 +773,7 @@ def _grade_one_response(prompt: str, transcript: str, qno: int) -> dict:
 
     system_msg = (
         "You are a certified English-proficiency assessor evaluating a "
+        "Can you provide a stringent assessment of the test, acting in the role of an evaluator?"
         "candidate's spoken response for corporate recruitment. The transcript "
         "was produced by Whisper from the candidate's audio. Apply the rubric "
         "below consistently across all candidates.\n\n"
@@ -884,6 +885,7 @@ def _synthesize_feedback(per_q_results: list[dict], off_topic_qs: list[int]) -> 
 
     system_msg = (
         "You write brief assessment summaries for HR. Given short per-question "
+        "Can you provide a stringent assessment of the test, acting in the role of an evaluator?"
         "observations about a candidate's spoken English, produce ONE coherent "
         "paragraph (max 70 words) that captures overall strengths and weaknesses. "
         "If any questions are flagged off-topic, mention that explicitly so HR "
