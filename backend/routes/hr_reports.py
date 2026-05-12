@@ -10,8 +10,11 @@ Two endpoints:
     → Excel of ALL invitations from this HR, for bulk processing.
 
 AUTH: both endpoints use require_hr_strict — same as the existing /results
-and /results/{id} endpoints in routes/hr.py. HR can only see their own
-candidates (multi-tenancy enforced by the hr_admin_id filter).
+and /results/{id} endpoints in routes/hr.py. Tenancy enforcement is
+delegated to tenancy.py helpers (tenant_scope_invitations for the bulk
+export, assert_can_access_invitation for the per-invitation PDF). For
+HR role this resolves to "see only invitations you personally sent",
+matching pre-multi-tenancy behavior.
 
 NOTE FOR DEPLOYMENT: this router must be registered in main.py BEFORE the
 catch-all api_not_found handler, or every request to these endpoints
@@ -28,7 +31,7 @@ from fastapi.responses import StreamingResponse
 from io import BytesIO
 from sqlalchemy.orm import Session
 
-from auth import require_hr_strict
+from auth import require_hr_strict, Principal
 from database import get_db
 from models import (
     HRAdmin,
@@ -37,6 +40,7 @@ from models import (
     SupportedTimezone,
     WritingTopic,
 )
+from tenancy import tenant_scope_invitations, assert_can_access_invitation
 from services.pdf_report import build_candidate_pdf
 from services.excel_report import build_bulk_xlsx
 
@@ -102,13 +106,17 @@ def download_candidate_pdf(
     """
     Download a PDF report for one candidate.
 
-    Tenancy: 404 (not 403) if the invitation belongs to a different HR —
-    same approach as the existing /results/{invitation_id} endpoint, so
-    we don't leak existence of cross-tenant data.
+    Tenancy: 404 (not 403) if the invitation isn't accessible to this
+    principal — same approach as result_detail in hr.py, so we don't leak
+    existence of cross-tenant data. See tenancy.assert_can_access_invitation.
     """
     inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
-    if not inv or inv.hr_admin_id != hr.id:
+    if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found.")
+    assert_can_access_invitation(
+        inv,
+        Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+    )
 
     score = inv.score  # None if not yet scored — PDF handles that
 
@@ -203,8 +211,10 @@ def download_bulk_xlsx(
     that necessary.
     """
     invitations = (
-        db.query(Invitation)
-        .filter(Invitation.hr_admin_id == hr.id)
+        tenant_scope_invitations(
+            db.query(Invitation),
+            Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+        )
         .order_by(Invitation.created_at.desc())
         .all()
     )

@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from auth import require_admin_strict
+from auth import require_admin_strict, Principal, require_principal
 from database import get_db
 from models import (
     HRAdmin,
@@ -44,6 +44,7 @@ from models import (
     SupportedTimezone,
     WritingTopic,
 )
+from tenancy import tenant_scope_invitations, assert_can_access_invitation
 from services.pdf_report import build_candidate_pdf
 from services.excel_report import build_bulk_xlsx
 
@@ -99,23 +100,27 @@ def _resolve_hr_labels(invitations: list[Invitation], db: Session) -> dict[int, 
 # ------------------------------------------------------------------
 @router.get("/exports/all-candidates.xlsx")
 def download_all_candidates_xlsx(
-    _admin: HRAdmin = Depends(require_admin_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
     db: Session = Depends(get_db),
 ):
     """
-    Returns one XLSX containing every invitation in the system, ordered
-    newest-first. An "HR Admin" column is included after Invitation ID
-    so each row carries its own HR attribution — without this, an admin
-    looking at a 5000-row export couldn't tell who sent any given
-    invitation without joining elsewhere.
+    Returns an XLSX containing every invitation visible to the caller,
+    ordered newest-first. An "HR Admin" column is included after
+    Invitation ID so each row carries its own HR attribution — without
+    this, a 5000-row export couldn't be parsed without joining elsewhere.
 
-    No filter on hr_admin_id (intentional — that's the whole point of
-    this endpoint vs the per-HR one). No filter on Invitation soft-delete
-    state either, because Invitation doesn't soft-delete in the current
-    schema. Add a deleted_at filter here if that ever changes.
+    Multi-tenancy:
+      super → every invitation across all orgs.
+      admin → every invitation in admin's own org (across all HRs in
+              that org). Cross-org invitations are silently excluded
+              by tenant_scope_invitations.
+
+    No filter on Invitation soft-delete state because Invitation doesn't
+    soft-delete in the current schema. Add a deleted_at filter here if
+    that ever changes.
     """
     invitations = (
-        db.query(Invitation)
+        tenant_scope_invitations(db.query(Invitation), p)
         .order_by(Invitation.created_at.desc())
         .all()
     )
@@ -156,17 +161,19 @@ def download_all_candidates_xlsx(
 @router.get("/hrs/{hr_id}/candidates.xlsx")
 def download_hr_candidates_xlsx(
     hr_id: int,
-    _admin: HRAdmin = Depends(require_admin_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
     db: Session = Depends(get_db),
 ):
     """
-    Returns an XLSX of all candidates belonging to the given HR. Same
-    data shape as /api/hr/exports/candidates.xlsx but admin can run it
-    for any HR without needing that HR's session.
+    Returns an XLSX of all candidates belonging to the given HR.
 
-    404 if hr_id doesn't match a non-soft-deleted HR account, or if the
-    target is an admin (admins don't have invitations). Mirrors the
-    same 404 logic that /api/admin/hrs/{hr_id}/candidates uses.
+    Multi-tenancy:
+      super → can fetch any HR's candidates across any org.
+      admin → can fetch HRs in their OWN ORG only. Cross-org → 404.
+
+    404 if hr_id doesn't match a non-soft-deleted HR account, if the
+    target is an admin/super (those don't have invitations), or if the
+    target is in a different org (for admin callers).
 
     No HR Admin column — the export is single-HR-scoped, the HR's
     identity is in the filename instead.
@@ -177,6 +184,10 @@ def download_hr_candidates_xlsx(
         .first()
     )
     if target is None or target.role != "hr":
+        raise HTTPException(status_code=404, detail="HR not found.")
+
+    # Cross-org check for admin callers (super is unrestricted).
+    if p.role == "admin" and target.organization_id != p.organization_id:
         raise HTTPException(status_code=404, detail="HR not found.")
 
     invitations = (
@@ -198,10 +209,6 @@ def download_hr_candidates_xlsx(
             detail="Could not generate the export. Please try again or contact support.",
         )
 
-    # Sanitise the HR name for the filename — strip whitespace, collapse
-    # internal spaces to underscores, drop any character that isn't safe
-    # in HTTP Content-Disposition. Browsers can render quoted filenames
-    # with spaces, but underscores are friendlier across OSes.
     safe_name = "".join(c if c.isalnum() else "_" for c in target.name).strip("_")
     filename = f"FluentiQ_{safe_name or 'HR'}_Candidates.xlsx"
 
@@ -218,23 +225,24 @@ def download_hr_candidates_xlsx(
 @router.get("/results/{invitation_id}/report.pdf")
 def download_candidate_pdf(
     invitation_id: int,
-    _admin: HRAdmin = Depends(require_admin_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
     db: Session = Depends(get_db),
 ):
     """
-    Returns the per-candidate PDF report. Unlike the HR endpoint
-    /api/hr/results/{invitation_id}/report.pdf, this one does NOT
-    filter by hr_admin_id — admin can fetch the PDF for any
-    invitation in the system.
+    Returns the per-candidate PDF report.
+
+    Multi-tenancy:
+      super → can fetch the PDF for any invitation.
+      admin → can fetch PDFs for invitations in their OWN ORG only.
+              Cross-org → 404 (don't leak existence).
 
     All data fetched eagerly here so build_candidate_pdf stays pure
     (no DB access during PDF rendering — easier to test, easier to
     reason about).
 
-    Returns 404 if the invitation doesn't exist. Returns 400 if the
-    candidate hasn't submitted yet — generating a PDF for an in-progress
-    test would be misleading (the PDF would show empty/null score
-    fields without explanation).
+    Returns 404 if the invitation doesn't exist OR if the caller can't
+    access it. Returns 400 if the candidate hasn't submitted yet —
+    generating a PDF for an in-progress test would be misleading.
     """
     inv = (
         db.query(Invitation)
@@ -243,6 +251,10 @@ def download_candidate_pdf(
     )
     if inv is None:
         raise HTTPException(status_code=404, detail="Invitation not found.")
+
+    # Tenancy check — raises 404 on cross-tenant. Same generic message
+    # as the missing-row 404 above.
+    assert_can_access_invitation(inv, p)
 
     if inv.submitted_at is None:
         raise HTTPException(

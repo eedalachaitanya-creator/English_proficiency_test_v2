@@ -147,7 +147,9 @@ from routes import hr_content as hr_content_routes
 from routes import admin as admin_routes
 from routes import hr_reports as hr_reports_routes
 from routes import admin_reports as admin_reports_routes
+from routes import super as super_routes
 
+app.include_router(super_routes.router)
 app.include_router(hr_routes.router)
 app.include_router(candidate_routes.router)
 app.include_router(submit_routes.router)

@@ -30,7 +30,12 @@ from database import get_db
 from models import (
     HRAdmin, Passage, Question, SpeakingTopic, WritingTopic, Invitation
 )
-from auth import require_hr_strict  # strict HR auth — blocks must_change_password=True; HR content authoring is NOT on the allow-list
+from auth import require_principal, Principal
+from tenancy import (
+    tenant_scope_content_read,   # list-time WHERE filter ("own-org + global")
+    assert_can_edit_content,     # single-row guard for update/delete/toggle
+    new_content_org_id,          # computes the org_id to stamp on new rows
+)
 import schemas
 
 
@@ -40,6 +45,22 @@ router = APIRouter(prefix="/api/hr/content", tags=["hr-content"])
 # ============================================================================
 # Helpers
 # ============================================================================
+#
+# Content authoring is gated on require_principal(allow=("super","admin","hr"),
+# strict=True). The same dependency applies to every endpoint below — content
+# management is a unified surface across roles, with tenancy scoping handled
+# by tenant_scope_content_read / assert_can_edit_content based on principal.role.
+#
+# Why include 'hr' alongside 'admin' and 'super':
+#   - HR authors content for their own org (own-org + global reads, own-org writes).
+#   - Admin sees the same surface but is also the rolewith broader visibility
+#     within the org. Same content rules apply (own-org + global reads, own-org
+#     writes — global is super-only to edit).
+#   - Super sees and edits everything, including the global pool.
+#
+# strict=True blocks users on a temp password from authoring content. They
+# need to clear must_change_password via /api/hr/change-password or
+# /api/admin/change-password first.
 
 ALLOWED_DIFFICULTIES = {"intermediate", "expert"}
 ALLOWED_QUESTION_TYPES = {"reading_comp", "grammar", "vocabulary", "fill_blank"}
@@ -166,9 +187,19 @@ def _check_writing_topic_in_use(db: Session, topic_id: int) -> None:
 def list_passages(
     difficulty: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    q = db.query(Passage).filter(Passage.deleted_at.is_(None)).order_by(Passage.id.desc())
+    """
+    Tenancy: returns own-org passages + global (NULL org_id) passages.
+    Globally-seeded content (NULL org_id from Stixis install) is visible
+    to every org so customers don't have to re-author it. Super sees
+    every org's passages too.
+    """
+    q = tenant_scope_content_read(
+        db.query(Passage).filter(Passage.deleted_at.is_(None)),
+        Passage,
+        p,
+    ).order_by(Passage.id.desc())
     if difficulty:
         _validate_difficulty(difficulty)
         q = q.filter(Passage.difficulty == difficulty)
@@ -179,8 +210,12 @@ def list_passages(
 def create_passage(
     payload: schemas.PassageCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """
+    Tenancy: new passages are stamped with the caller's organization_id.
+    HR/admin can never author into the global pool (only super can).
+    """
     _validate_difficulty(payload.difficulty)
     if not payload.title.strip():
         raise HTTPException(status_code=422, detail="title cannot be empty")
@@ -193,6 +228,7 @@ def create_passage(
         difficulty=payload.difficulty,
         topic=payload.topic.strip() if payload.topic else None,
         word_count=len(payload.body.split()),
+        organization_id=new_content_org_id(p),
     )
     db.add(passage)
     db.commit()
@@ -205,11 +241,18 @@ def update_passage(
     passage_id: int,
     payload: schemas.PassageUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """
+    Tenancy: can edit only own-org passages.
+      - Global content (NULL org) → 403 with "ask super" message.
+      - Cross-org content → 404 (don't leak existence).
+      - Own org → allowed.
+    """
     passage = db.query(Passage).filter(Passage.id == passage_id).first()
     if not passage:
         raise HTTPException(status_code=404, detail="passage not found")
+    assert_can_edit_content(passage, p)
 
     if payload.title is not None:
         if not payload.title.strip():
@@ -235,18 +278,22 @@ def update_passage(
 def delete_passage(
     passage_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
     """Soft delete — sets deleted_at timestamp. Hidden from HR list afterward.
     Existing invitations are unaffected because they snapshot assigned IDs
     at creation time. _check_passage_in_use removed: soft delete cannot
-    cause FK violations."""
+    cause FK violations.
+
+    Tenancy: same rules as update — own-org only, 403 on global, 404 on
+    cross-org."""
     passage = db.query(Passage).filter(
         Passage.id == passage_id,
         Passage.deleted_at.is_(None),
     ).first()
     if not passage:
         raise HTTPException(status_code=404, detail="passage not found")
+    assert_can_edit_content(passage, p)
     passage.deleted_at = datetime.utcnow()
     db.commit()
     return None
@@ -256,17 +303,20 @@ def delete_passage(
 def toggle_passage_disabled(
     passage_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
     """Toggle disabled state. NULL → set to now (disabled). Non-NULL → set
     to NULL (re-enabled). New invitations skip disabled items; existing
-    invitations are unaffected."""
+    invitations are unaffected.
+
+    Tenancy: same rules as update — own-org only."""
     passage = db.query(Passage).filter(
         Passage.id == passage_id,
         Passage.deleted_at.is_(None),
     ).first()
     if not passage:
         raise HTTPException(status_code=404, detail="passage not found")
+    assert_can_edit_content(passage, p)
     passage.disabled_at = None if passage.disabled_at else datetime.utcnow()
     db.commit()
     db.refresh(passage)
@@ -277,7 +327,7 @@ def toggle_passage_disabled(
 async def bulk_import_passages(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
     """
     Bulk-import passages from CSV. Expected columns:
@@ -294,6 +344,11 @@ async def bulk_import_passages(
             status_code=422,
             detail=f"CSV must have columns: {sorted(expected_cols)}. Got: {reader.fieldnames}",
         )
+
+    # Tenancy: every imported row gets the caller's org_id. Compute it
+    # once up front, not per-row — same answer either way and one less
+    # function call inside a tight loop.
+    org_id = new_content_org_id(p)
 
     created = 0
     errors: list[str] = []
@@ -316,6 +371,7 @@ async def bulk_import_passages(
             db.add(Passage(
                 title=title, body=body, difficulty=difficulty, topic=topic,
                 word_count=len(body.split()),
+                organization_id=org_id,
             ))
             created += 1
         except Exception as e:
@@ -335,9 +391,14 @@ def list_questions(
     difficulty: Optional[str] = Query(None),
     passage_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    q = db.query(Question).filter(Question.deleted_at.is_(None)).order_by(Question.id.desc())
+    """Tenancy: own-org questions + global. See list_passages."""
+    q = tenant_scope_content_read(
+        db.query(Question).filter(Question.deleted_at.is_(None)),
+        Question,
+        p,
+    ).order_by(Question.id.desc())
     if type:
         _validate_question_type(type)
         q = q.filter(Question.question_type == type)
@@ -353,8 +414,15 @@ def list_questions(
 def create_question(
     payload: schemas.QuestionCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """
+    Tenancy: new questions stamped with caller's organization_id.
+    For reading_comp questions, the parent passage_id must point to a
+    passage that's visible to this principal (own-org or global). If
+    the passage isn't visible, we return the same 422 "does not exist"
+    as for truly missing IDs — don't leak cross-org passage IDs.
+    """
     _validate_difficulty(payload.difficulty)
     _validate_question_type(payload.question_type)
     _validate_options(payload.options, payload.correct_answer)
@@ -367,7 +435,13 @@ def create_question(
                 status_code=422,
                 detail="reading_comp questions must have a passage_id",
             )
-        passage = db.query(Passage).filter(Passage.id == payload.passage_id).first()
+        # Use the tenancy-scoped read so cross-org passages are invisible
+        # to this caller. Same shape as list_passages.
+        passage = tenant_scope_content_read(
+            db.query(Passage).filter(Passage.id == payload.passage_id),
+            Passage,
+            p,
+        ).first()
         if not passage:
             raise HTTPException(status_code=422, detail="passage_id does not exist")
     else:
@@ -384,6 +458,7 @@ def create_question(
         stem=payload.stem.strip(),
         options=payload.options,
         correct_answer=payload.correct_answer,
+        organization_id=new_content_org_id(p),
     )
     db.add(question)
     db.commit()
@@ -396,11 +471,13 @@ def update_question(
     question_id: int,
     payload: schemas.QuestionUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """Tenancy: own-org only — 403 on global, 404 on cross-org."""
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="question not found")
+    assert_can_edit_content(question, p)
 
     if payload.stem is not None:
         if not payload.stem.strip():
@@ -425,15 +502,17 @@ def update_question(
 def delete_question(
     question_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    """Soft delete — see delete_passage for rationale."""
+    """Soft delete — see delete_passage for rationale.
+    Tenancy: own-org only."""
     question = db.query(Question).filter(
         Question.id == question_id,
         Question.deleted_at.is_(None),
     ).first()
     if not question:
         raise HTTPException(status_code=404, detail="question not found")
+    assert_can_edit_content(question, p)
     question.deleted_at = datetime.utcnow()
     db.commit()
     return None
@@ -443,15 +522,17 @@ def delete_question(
 def toggle_question_disabled(
     question_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    """Toggle disabled state. See toggle_passage_disabled for rationale."""
+    """Toggle disabled state. See toggle_passage_disabled for rationale.
+    Tenancy: own-org only."""
     question = db.query(Question).filter(
         Question.id == question_id,
         Question.deleted_at.is_(None),
     ).first()
     if not question:
         raise HTTPException(status_code=404, detail="question not found")
+    assert_can_edit_content(question, p)
     question.disabled_at = None if question.disabled_at else datetime.utcnow()
     db.commit()
     db.refresh(question)
@@ -462,7 +543,7 @@ def toggle_question_disabled(
 async def bulk_import_questions(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
     """
     Bulk-import standalone (non-reading_comp) questions from CSV.
@@ -482,6 +563,9 @@ async def bulk_import_questions(
             status_code=422,
             detail=f"CSV must have columns: {sorted(expected_cols)}. Got: {reader.fieldnames}",
         )
+
+    # Tenancy: every imported row gets the caller's org_id.
+    org_id = new_content_org_id(p)
 
     created = 0
     errors: list[str] = []
@@ -524,6 +608,7 @@ async def bulk_import_questions(
                 stem=stem,
                 options=options,
                 correct_answer=correct,
+                organization_id=org_id,
             ))
             created += 1
         except Exception as e:
@@ -541,9 +626,14 @@ async def bulk_import_questions(
 def list_writing_topics(
     difficulty: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    q = db.query(WritingTopic).filter(WritingTopic.deleted_at.is_(None)).order_by(WritingTopic.id.desc())
+    """Tenancy: own-org + global. See list_passages."""
+    q = tenant_scope_content_read(
+        db.query(WritingTopic).filter(WritingTopic.deleted_at.is_(None)),
+        WritingTopic,
+        p,
+    ).order_by(WritingTopic.id.desc())
     if difficulty:
         _validate_difficulty(difficulty)
         q = q.filter(WritingTopic.difficulty == difficulty)
@@ -554,8 +644,9 @@ def list_writing_topics(
 def create_writing_topic(
     payload: schemas.WritingTopicCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """Tenancy: new writing topic stamped with caller's organization_id."""
     _validate_difficulty(payload.difficulty)
     if not payload.prompt_text.strip():
         raise HTTPException(status_code=422, detail="prompt_text cannot be empty")
@@ -570,6 +661,7 @@ def create_writing_topic(
         min_words=payload.min_words,
         max_words=payload.max_words,
         category=payload.category.strip() if payload.category else None,
+        organization_id=new_content_org_id(p),
     )
     db.add(topic)
     db.commit()
@@ -582,11 +674,13 @@ def update_writing_topic(
     topic_id: int,
     payload: schemas.WritingTopicUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """Tenancy: own-org only — 403 on global, 404 on cross-org."""
     topic = db.query(WritingTopic).filter(WritingTopic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="writing topic not found")
+    assert_can_edit_content(topic, p)
 
     if payload.prompt_text is not None:
         if not payload.prompt_text.strip():
@@ -614,15 +708,16 @@ def update_writing_topic(
 def delete_writing_topic(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    """Soft delete — see delete_passage for rationale."""
+    """Soft delete — see delete_passage. Tenancy: own-org only."""
     topic = db.query(WritingTopic).filter(
         WritingTopic.id == topic_id,
         WritingTopic.deleted_at.is_(None),
     ).first()
     if not topic:
         raise HTTPException(status_code=404, detail="writing topic not found")
+    assert_can_edit_content(topic, p)
     topic.deleted_at = datetime.utcnow()
     db.commit()
     return None
@@ -632,15 +727,16 @@ def delete_writing_topic(
 def toggle_writing_topic_disabled(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    """Toggle disabled state. See toggle_passage_disabled for rationale."""
+    """Toggle disabled state. See toggle_passage_disabled. Tenancy: own-org only."""
     topic = db.query(WritingTopic).filter(
         WritingTopic.id == topic_id,
         WritingTopic.deleted_at.is_(None),
     ).first()
     if not topic:
         raise HTTPException(status_code=404, detail="writing topic not found")
+    assert_can_edit_content(topic, p)
     topic.disabled_at = None if topic.disabled_at else datetime.utcnow()
     db.commit()
     db.refresh(topic)
@@ -651,7 +747,7 @@ def toggle_writing_topic_disabled(
 async def bulk_import_writing_topics(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
     """
     Bulk-import writing topics. CSV columns:
@@ -668,6 +764,9 @@ async def bulk_import_writing_topics(
             status_code=422,
             detail=f"CSV must have columns: {sorted(expected_cols)}. Got: {reader.fieldnames}",
         )
+
+    # Tenancy: every imported row gets the caller's org_id.
+    org_id = new_content_org_id(p)
 
     created = 0
     errors: list[str] = []
@@ -695,6 +794,7 @@ async def bulk_import_writing_topics(
             db.add(WritingTopic(
                 prompt_text=prompt_text, difficulty=difficulty,
                 min_words=min_words, max_words=max_words, category=category,
+                organization_id=org_id,
             ))
             created += 1
         except Exception as e:
@@ -712,9 +812,14 @@ async def bulk_import_writing_topics(
 def list_speaking_topics(
     difficulty: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    q = db.query(SpeakingTopic).filter(SpeakingTopic.deleted_at.is_(None)).order_by(SpeakingTopic.id.desc())
+    """Tenancy: own-org + global. See list_passages."""
+    q = tenant_scope_content_read(
+        db.query(SpeakingTopic).filter(SpeakingTopic.deleted_at.is_(None)),
+        SpeakingTopic,
+        p,
+    ).order_by(SpeakingTopic.id.desc())
     if difficulty:
         _validate_difficulty(difficulty)
         q = q.filter(SpeakingTopic.difficulty == difficulty)
@@ -725,8 +830,9 @@ def list_speaking_topics(
 def create_speaking_topic(
     payload: schemas.SpeakingTopicCreate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """Tenancy: stamped with caller's organization_id."""
     _validate_difficulty(payload.difficulty)
     if not payload.prompt_text.strip():
         raise HTTPException(status_code=422, detail="prompt_text cannot be empty")
@@ -735,6 +841,7 @@ def create_speaking_topic(
         prompt_text=payload.prompt_text.strip(),
         difficulty=payload.difficulty,
         category=payload.category.strip() if payload.category else None,
+        organization_id=new_content_org_id(p),
     )
     db.add(topic)
     db.commit()
@@ -747,11 +854,13 @@ def update_speaking_topic(
     topic_id: int,
     payload: schemas.SpeakingTopicUpdate,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
+    """Tenancy: own-org only — 403 on global, 404 on cross-org."""
     topic = db.query(SpeakingTopic).filter(SpeakingTopic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="speaking topic not found")
+    assert_can_edit_content(topic, p)
 
     if payload.prompt_text is not None:
         if not payload.prompt_text.strip():
@@ -772,15 +881,16 @@ def update_speaking_topic(
 def delete_speaking_topic(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    """Soft delete — see delete_passage for rationale."""
+    """Soft delete — see delete_passage. Tenancy: own-org only."""
     topic = db.query(SpeakingTopic).filter(
         SpeakingTopic.id == topic_id,
         SpeakingTopic.deleted_at.is_(None),
     ).first()
     if not topic:
         raise HTTPException(status_code=404, detail="speaking topic not found")
+    assert_can_edit_content(topic, p)
     topic.deleted_at = datetime.utcnow()
     db.commit()
     return None
@@ -790,15 +900,16 @@ def delete_speaking_topic(
 def toggle_speaking_topic_disabled(
     topic_id: int,
     db: Session = Depends(get_db),
-    hr: HRAdmin = Depends(require_hr_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
 ):
-    """Toggle disabled state. See toggle_passage_disabled for rationale."""
+    """Toggle disabled state. See toggle_passage_disabled. Tenancy: own-org only."""
     topic = db.query(SpeakingTopic).filter(
         SpeakingTopic.id == topic_id,
         SpeakingTopic.deleted_at.is_(None),
     ).first()
     if not topic:
         raise HTTPException(status_code=404, detail="speaking topic not found")
+    assert_can_edit_content(topic, p)
     topic.disabled_at = None if topic.disabled_at else datetime.utcnow()
     db.commit()
     db.refresh(topic)

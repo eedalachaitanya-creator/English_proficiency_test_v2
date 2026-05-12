@@ -46,6 +46,7 @@ from schemas import (
     ScoreDetail,
     AudioRecordingPublic,
     SupportedTimezoneOut,
+    OrganizationOut,        # NEW: used in login + /me responses to expose org info
 )
 from auth import (
     hash_password,
@@ -54,6 +55,12 @@ from auth import (
     generate_access_code,
     require_hr,           # allow-list: /me, /change-password
     require_hr_strict,    # everything else — blocks must_change_password=True
+    require_principal,    # NEW: unified principal-returning dep used on tenant-scoped routes
+    Principal,            # NEW: typed (user, role, organization_id) bundle
+)
+from tenancy import (
+    tenant_scope_invitations,     # NEW: WHERE-filter helper for list queries
+    assert_can_access_invitation, # NEW: 404 guard for single-row fetches
 )
 
 from jwt_service import (
@@ -217,12 +224,33 @@ def login(payload: HRLoginRequest, request: Request, db: Session = Depends(get_d
     # Mint JWT tokens alongside the session cookie. Frontend stores these
     # and uses Authorization: Bearer for new API calls. Cookie path stays
     # for backward-compat with existing routes.
-    tokens = create_token_pair(user_id=hr.id, role="hr")
+    tokens = create_token_pair(
+        user_id=hr.id,
+        role="hr",
+        # Embed the user's current password_changed_at into the JWT so a
+        # later password rotation invalidates this token (auth.py
+        # _resolve_jwt_user enforces the match). Mirrors session_pw_v on
+        # the cookie path.
+        pw_changed_at_iso=hr.password_changed_at.isoformat() if hr.password_changed_at else None,
+    )
+
+    # Multi-tenancy: organization always present for HR (CHECK constraint),
+    # serialized defensively in case of unexpected NULL.
+    org_out = None
+    if hr.organization is not None:
+        org_out = OrganizationOut(
+            id=hr.organization.id,
+            name=hr.organization.name,
+            slug=hr.organization.slug,
+            disabled_at=hr.organization.disabled_at,
+        )
 
     return HRLoginResponse(
         id=hr.id,
         name=hr.name,
         email=hr.email,
+        role=hr.role,
+        organization=org_out,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
@@ -267,7 +295,11 @@ def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get
     if not hr or hr.role != "hr" or decoded.get("role") != "hr":
         raise HTTPException(status_code=401, detail=GENERIC_401)
 
-    new_access = create_access_token(user_id=hr.id, role="hr")
+    new_access = create_access_token(
+        user_id=hr.id,
+        role="hr",
+        pw_changed_at_iso=hr.password_changed_at.isoformat() if hr.password_changed_at else None,
+    )
     return RefreshTokenResponse(
         access_token=new_access,
         expires_in=int(os.getenv("JWT_ACCESS_MINUTES", "30")) * 60,
@@ -278,11 +310,26 @@ def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get
 def me(hr: HRAdmin = Depends(require_hr)):
     """Returns the currently logged-in HR. Frontend uses this to confirm
     the session is alive AND to refresh must_change_password on app
-    boot (e.g. after a forced-change reset triggered from another tab)."""
+    boot (e.g. after a forced-change reset triggered from another tab).
+
+    Multi-tenancy: includes the user's role + organization so the frontend
+    can show "Logged in as HR @ {Org Name}" in the topbar. Organization
+    is lazily loaded via the relationship; cheap because the same DB row
+    was just fetched by require_hr."""
+    org_out = None
+    if hr.organization is not None:
+        org_out = OrganizationOut(
+            id=hr.organization.id,
+            name=hr.organization.name,
+            slug=hr.organization.slug,
+            disabled_at=hr.organization.disabled_at,
+        )
     return HRLoginResponse(
         id=hr.id,
         name=hr.name,
         email=hr.email,
+        role=hr.role,
+        organization=org_out,
         must_change_password=hr.must_change_password,
     )
 
@@ -596,14 +643,23 @@ def create_invite(
     # we re-validate here as the source of truth.
     _validate_window(payload.valid_from, payload.valid_until)
 
-    # Duplicate-invitation guard. If this candidate email already has a
+    # Duplicate-invitation guard. Org-scoped per multi-tenancy design:
+    # the same candidate email is allowed to have pending invitations in
+    # different orgs. Within a single org, the guard still blocks a
+    # second pending invitation. This avoids leaking the existence of
+    # the same candidate across orgs while still catching the common
+    # "two HRs at the same company double-book Bob" case.
+    #
+    # Also: switched from the deprecated datetime.utcnow() to the
+    # _utcnow_naive helper this file already defines.
     candidate_email_lower = payload.candidate_email.lower()
     existing = (
         db.query(Invitation)
         .filter(
             Invitation.candidate_email == candidate_email_lower,
+            Invitation.organization_id == hr.organization_id,
             Invitation.submitted_at.is_(None),
-            Invitation.expires_at > datetime.utcnow(),
+            Invitation.expires_at > _utcnow_naive(),
         )
         .first()
     )
@@ -679,6 +735,15 @@ def create_invite(
         candidate_name=candidate_name,
         difficulty=payload.difficulty,
         hr_admin_id=hr.id,
+        # Tenant ownership. Denormalized from hr.organization_id so
+        # every tenant-scoped query on Invitation can filter on this
+        # single column without JOINing to hr_admins. HR is guaranteed
+        # to have a non-None org by ck_hr_admins_role_org_consistency,
+        # but we assert it here as defense-in-depth — if a super ever
+        # ends up on this endpoint (they shouldn't; this dep is HR-only),
+        # we want a loud failure, not a silent NULL insert that fails
+        # at the NOT NULL constraint with a less-actionable error.
+        organization_id=hr.organization_id,
         valid_from=valid_from,
         expires_at=expires_at,
         access_code=access_code,
@@ -821,11 +886,16 @@ def regenerate_code(
     from too many wrong attempts. Resets the failed_code_attempts counter and
     clears the code_locked flag.
 
-    Tenancy check: 404 (not 403) if the invitation belongs to a different HR.
+    Tenancy check: 404 (not 403) if the invitation isn't accessible to this
+    principal. See tenancy.assert_can_access_invitation for the rules.
     """
     inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
-    if not inv or inv.hr_admin_id != hr.id:
+    if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found.")
+    assert_can_access_invitation(
+        inv,
+        Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+    )
 
     if inv.submitted_at is not None:
         raise HTTPException(
@@ -921,12 +991,16 @@ def invitation_details(
     Returns valid data for both pending and submitted invitations. The
     frontend decides whether to render the card (skipped for submitted).
 
-    Tenancy check: 404 (not 403) if the invitation belongs to a different
-    HR, to avoid leaking which invitation IDs exist.
+    Tenancy check: 404 (not 403) if the invitation isn't accessible to this
+    principal. See tenancy.assert_can_access_invitation for the rules.
     """
     inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
-    if not inv or inv.hr_admin_id != hr.id:
+    if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found.")
+    assert_can_access_invitation(
+        inv,
+        Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+    )
 
     return InvitationDetails(
         invitation_id=inv.id,
@@ -997,11 +1071,15 @@ def resend_invitation_email(
       6. Commit the email status
 
     Refuses to resend after submission (the test is over). Tenancy:
-    404 if not owned by this HR.
+    404 if not accessible to this principal.
     """
     inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
-    if not inv or inv.hr_admin_id != hr.id:
+    if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found.")
+    assert_can_access_invitation(
+        inv,
+        Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+    )
 
     if inv.submitted_at is not None:
         raise HTTPException(
@@ -1145,12 +1223,17 @@ def resend_invitation_email(
 @router.get("/results", response_model=list[ScoreSummary])
 def list_results(hr: HRAdmin = Depends(require_hr_strict), db: Session = Depends(get_db)):
     """
-    All invitations sent by this HR, newest first. Score fields are None
-    until the candidate submits and Day 2 scoring fills them in.
+    All invitations visible to this principal, newest first. Score fields
+    are None until the candidate submits and Day 2 scoring fills them in.
+
+    Tenancy: for HR role this returns only invitations they personally
+    sent (hr_admin_id == hr.id). Admin role would see every invitation
+    in their org; super sees everything. The filter is applied by
+    tenant_scope_invitations based on role — same rule everywhere.
     """
+    principal = Principal(user=hr, role=hr.role, organization_id=hr.organization_id)
     invitations = (
-        db.query(Invitation)
-        .filter(Invitation.hr_admin_id == hr.id)
+        tenant_scope_invitations(db.query(Invitation), principal)
         .order_by(Invitation.created_at.desc())
         .all()
     )
@@ -1193,11 +1276,15 @@ def result_detail(
 ):
     """
     Detail view for one candidate. Tenancy check: 404 (not 403) if the
-    invitation belongs to a different HR — don't leak existence.
+    invitation isn't accessible to this principal — don't leak existence.
     """
     inv = db.query(Invitation).filter(Invitation.id == invitation_id).first()
-    if not inv or inv.hr_admin_id != hr.id:
+    if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found.")
+    assert_can_access_invitation(
+        inv,
+        Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+    )
 
     s = inv.score
 
@@ -1279,16 +1366,29 @@ def get_audio(
 ):
     """
     Stream a candidate's audio recording back to HR's <audio> element.
-    Tenancy check: only the HR who invited the candidate can access the audio.
-    Anyone else (including other HRs) gets 404 — don't leak existence.
+    Tenancy check: only callers who can access the underlying invitation
+    can access the audio. Cross-tenant access returns 404 — don't leak
+    existence.
     """
     rec = db.query(AudioRecording).filter(AudioRecording.id == audio_recording_id).first()
     if not rec:
         raise HTTPException(status_code=404, detail="Recording not found.")
 
-    # Walk back to the invitation and verify the HR owns it
+    # Walk back to the invitation and verify the principal can access it.
+    # Generic 404 for any access failure (missing inv, cross-tenant) so
+    # cross-tenant access doesn't leak the existence of the recording.
     inv = db.query(Invitation).filter(Invitation.id == rec.invitation_id).first()
-    if not inv or inv.hr_admin_id != hr.id:
+    if not inv:
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    try:
+        assert_can_access_invitation(
+            inv,
+            Principal(user=hr, role=hr.role, organization_id=hr.organization_id),
+        )
+    except HTTPException:
+        # Re-raise with the audio-context message instead of the
+        # generic "Invitation not found." so HR sees consistent wording.
+        # Same 404 status either way.
         raise HTTPException(status_code=404, detail="Recording not found.")
 
     file_path = Path(rec.file_path)

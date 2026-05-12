@@ -27,13 +27,15 @@ from sqlalchemy.orm import Session
 
 from auth import (
     hash_password,
-    require_admin,           # allow-list: /me, /change-password
-    require_admin_strict,    # everything else — blocks must_change_password=True
+    require_admin,           # allow-list: /me, /change-password (legacy wrapper, kept for backward compat)
+    require_admin_strict,    # everything else — blocks must_change_password=True (legacy wrapper)
+    require_principal,       # NEW: unified principal-returning dep used on tenant-scoped routes
+    Principal,               # NEW: typed (user, role, organization_id) bundle
     verify_password,
 )
 from database import get_db
 from email_service import send_temp_password_email
-from models import HRAdmin
+from models import HRAdmin, Organization
 from password_reset import (
     FORGOT_PASSWORD_GENERIC_RESPONSE,
     is_recently_reset,
@@ -48,8 +50,11 @@ from schemas import (
     AdminUserSummary,
     ChangePasswordRequest,
     ForgotPasswordRequest,
+    OrganizationOut,         # NEW: included on AdminLoginResponse so frontend knows admin's org
     UserCreateByAdminRequest,
     UserCreateByAdminResponse,
+    UserUpdateByAdminRequest,
+    UserUpdateByAdminResponse,
     PaginatedScoreSummary,
     ScoreSummary,
 )
@@ -74,6 +79,72 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+# ============================================================
+# Multi-tenancy helpers (Step D)
+# ============================================================
+
+def _pw_changed_at_iso(user: HRAdmin):
+    """Return user.password_changed_at as an ISO-8601 string, or None.
+    Embedded in JWTs so token replay after password rotation is rejected.
+    Mirrors the cookie session's pw_v field."""
+    return user.password_changed_at.isoformat() if user.password_changed_at else None
+
+
+def _count_active_admins_in_org(db: Session, organization_id: int) -> int:
+    """
+    How many non-soft-deleted admins exist in this org right now?
+
+    Used by the destructive-action guard "every org must have at least one
+    admin." Called BEFORE soft-deleting an admin to refuse the operation
+    when it would drop the count to zero.
+
+    Returns 0 for orgs that have only HRs (or are empty) — those orgs are
+    in a broken state from the multi-tenancy invariant's perspective but
+    not something this helper tries to recover from; it just reports.
+    """
+    from sqlalchemy import func
+    return (
+        db.query(func.count(HRAdmin.id))
+        .filter(
+            HRAdmin.organization_id == organization_id,
+            HRAdmin.role == "admin",
+            HRAdmin.deleted_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _principal_can_access_user(target: HRAdmin, p: Principal) -> bool:
+    """
+    Returns True if the principal `p` is allowed to view/edit/delete the
+    user `target`. Centralized so list_users, update_user, delete_user
+    all agree.
+
+    Rules:
+      super → can access anyone (including other supers, admins in any
+              org, HRs in any org). The cross-org god mode of super.
+      admin → can access users in their own org only. Cross-org → False.
+              Super-role targets → False (admin cannot touch super).
+      hr    → not allowed to call admin endpoints in the first place,
+              but we still answer False if somehow asked.
+
+    Returning False = generic 404 at the caller, matching the
+    "don't leak existence" pattern used elsewhere.
+    """
+    if p.role == "super":
+        return True
+
+    if p.role == "admin":
+        # Admin cannot touch a super (super is above admin in the hierarchy).
+        if target.role == "super":
+            return False
+        # Cross-org targets are invisible. Same org → allowed.
+        return target.organization_id == p.organization_id
+
+    return False
 
 
 # ------------------------------------------------------------------
@@ -107,15 +178,35 @@ def login(payload: AdminLoginRequest, request: Request, db: Session = Depends(ge
     # pattern as HR login, enables session invalidation on rotation.
     request.session["pw_v"] = user.password_changed_at.isoformat()
 
-    # Mint JWT tokens with role="admin" so require_jwt_admin accepts them
-    # but require_jwt_hr rejects them (cross-role token misuse defense).
-    tokens = create_token_pair(user_id=user.id, role="admin")
+    # Mint JWT tokens. Embed pw_changed_at_iso so token replay after
+    # password rotation is rejected (mirror of cookie pw_v). Role stays
+    # 'admin' — super uses its own /api/super/login endpoint and would
+    # be rejected by the role check above anyway.
+    tokens = create_token_pair(
+        user_id=user.id,
+        role="admin",
+        pw_changed_at_iso=_pw_changed_at_iso(user),
+    )
+
+    # Multi-tenancy: include the admin's organization on the response so
+    # the frontend can render "Logged in as admin @ {Org Name}" without
+    # a follow-up request. Admin always has a non-NULL org (CHECK
+    # constraint); serialized defensively in case of unexpected NULL.
+    org_out = None
+    if user.organization is not None:
+        org_out = OrganizationOut(
+            id=user.organization.id,
+            name=user.organization.name,
+            slug=user.organization.slug,
+            disabled_at=user.organization.disabled_at,
+        )
 
     return AdminLoginResponse(
         id=user.id,
         name=user.name,
         email=user.email,
         role=user.role,
+        organization=org_out,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
@@ -158,7 +249,11 @@ def refresh_access_token(payload: AdminRefreshTokenRequest, db: Session = Depend
     if not user or user.role != "admin" or decoded.get("role") != "admin":
         raise HTTPException(status_code=401, detail=GENERIC_401)
 
-    new_access = create_access_token(user_id=user.id, role="admin")
+    new_access = create_access_token(
+        user_id=user.id,
+        role="admin",
+        pw_changed_at_iso=_pw_changed_at_iso(user),
+    )
     return AdminRefreshTokenResponse(
         access_token=new_access,
         expires_in=int(os.getenv("JWT_ACCESS_MINUTES", "30")) * 60,
@@ -170,12 +265,24 @@ def me(admin: HRAdmin = Depends(require_admin)):
     """Returns the currently logged-in admin. Frontend uses this to
     confirm the admin session is alive on page load AND to refresh
     must_change_password (e.g. after a forced-change reset triggered
-    from another tab)."""
+    from another tab).
+
+    Multi-tenancy: includes the admin's organization so the topbar can
+    render org context without a follow-up call."""
+    org_out = None
+    if admin.organization is not None:
+        org_out = OrganizationOut(
+            id=admin.organization.id,
+            name=admin.organization.name,
+            slug=admin.organization.slug,
+            disabled_at=admin.organization.disabled_at,
+        )
     return AdminLoginResponse(
         id=admin.id,
         name=admin.name,
         email=admin.email,
         role=admin.role,
+        organization=org_out,
         must_change_password=admin.must_change_password,
     )
 
@@ -345,17 +452,29 @@ def session_status(request: Request, db: Session = Depends(get_db)):
 # User management
 # ------------------------------------------------------------------
 @router.get("/users", response_model=list[AdminUserSummary])
-def list_users(_admin: HRAdmin = Depends(require_admin_strict), db: Session = Depends(get_db)):
+def list_users(
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
+    db: Session = Depends(get_db),
+    organization_id: int | None = None,
+):
     """
-    Every row in hr_admins (both 'hr' and 'admin' roles), each
-    annotated with how many invitations they've sent. Admins always
-    have count=0 (they can't create invitations); HRs get an accurate
-    aggregate via a single LEFT JOIN with a COUNT subquery — no
-    per-row N+1 lookups.
+    Multi-tenancy: returns users scoped to the caller.
 
-    Ordering: admins first, then HRs. Within each group, newest-first
-    by created_at. Grouping admins above HRs makes the admin section
-    of the table easy to spot at a glance.
+      super → all users across all orgs (every admin + HR in every org,
+              PLUS other super accounts). Can optionally narrow to a single
+              org via the ?organization_id=N query param.
+      admin → users in their own org only (admin + HR rows). Super
+              accounts are never returned to admin callers (admin can't
+              touch super). The ?organization_id= param is ignored for
+              admin — they can't see other orgs anyway.
+
+    Each row is annotated with how many invitations the user has sent.
+    Admin/super rows always have count=0; HRs get an accurate aggregate
+    via a single LEFT JOIN with a COUNT subquery — no per-row N+1 lookups.
+
+    Ordering: super first, then admins, then HRs. Within each group,
+    newest-first by created_at. Grouping high-privilege accounts first
+    keeps the admin section of the table easy to spot at a glance.
     """
     # Aggregate invitation counts per HR in a single grouped subquery.
     # Imported lazily to avoid pulling Invitation/SQLAlchemy func into
@@ -371,26 +490,49 @@ def list_users(_admin: HRAdmin = Depends(require_admin_strict), db: Session = De
         .subquery()
     )
 
-    # Admin rows get rank 0, HR rows rank 1 — ascending sort puts
-    # admins above HRs. created_at descending is the secondary key so
+    # super=0, admin=1, hr=2 — ascending sort puts super at the top, then
+    # admins, then HRs. created_at descending is the secondary key so
     # within each group the newest user is at the top.
-    role_rank = case((HRAdmin.role == "admin", 0), else_=1)
-    rows = (
+    role_rank = case(
+        (HRAdmin.role == "super", 0),
+        (HRAdmin.role == "admin", 1),
+        else_=2,
+    )
+
+    q = (
         db.query(HRAdmin, invite_counts.c.count)
         .outerjoin(invite_counts, HRAdmin.id == invite_counts.c.hr_admin_id)
         .filter(HRAdmin.deleted_at.is_(None))
-        .order_by(role_rank, HRAdmin.created_at.desc())
-        .all()
     )
+
+    # Tenancy scoping. Admin sees only their own org and only non-super
+    # rows. Super sees everything, optionally filtered to one org.
+    if p.role == "admin":
+        q = q.filter(
+            HRAdmin.organization_id == p.organization_id,
+            # Super-role users are invisible to admin even if a future
+            # multi-super-per-org world ever happens. Today supers have
+            # organization_id IS NULL so they'd already be excluded by
+            # the org filter above, but the explicit role check makes
+            # the intent obvious and survives future schema changes.
+            HRAdmin.role != "super",
+        )
+    elif p.role == "super" and organization_id is not None:
+        # Super opted into filtering by a specific org.
+        q = q.filter(HRAdmin.organization_id == organization_id)
+
+    rows = q.order_by(role_rank, HRAdmin.created_at.desc()).all()
+
     return [
         AdminUserSummary(
             id=user.id,
             name=user.name,
             email=user.email,
             role=user.role,
+            organization_id=user.organization_id,  # None for super
             # COALESCE the NULL from the LEFT JOIN to 0 — happens for
-            # every admin (no invitations) and for HRs who haven't sent
-            # any yet.
+            # every admin/super (no invitations) and for HRs who haven't
+            # sent any yet.
             candidate_count=count or 0,
             created_at=user.created_at,
         )
@@ -403,19 +545,21 @@ def list_hr_candidates(
     hr_id: int,
     page: int = 1,
     page_size: int = 25,
-    _admin: HRAdmin = Depends(require_admin_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
     db: Session = Depends(get_db),
 ):
     """
     Paginated candidate-results for the given HR. Mirrors /api/hr/results
-    but accepts an hr_id (admin can see ANY HR's candidates) and slices
-    server-side via SQL LIMIT/OFFSET so a busy HR doesn't ship hundreds
-    of rows in one request.
+    but accepts an hr_id so admin/super can see any HR's candidates.
 
-    Returns 404 if hr_id doesn't match any user OR matches an admin.
-    Admins don't have candidates, and treating them as "not found" keeps
-    the URL space tidy — same pattern the candidate-detail endpoint
-    uses for HR vs admin sessions.
+    Tenancy:
+      super → can fetch any HR's candidates across any org.
+      admin → can only fetch HRs that belong to admin's own org. Cross-org
+              hr_id returns 404, same as a missing HR — don't leak existence.
+
+    Returns 404 if hr_id doesn't match any user OR matches an admin/super.
+    Admins/supers don't have candidates, and treating them as "not found"
+    keeps the URL space tidy.
 
     page is 1-indexed. page_size is capped server-side at 100 to defend
     against a misbehaving client requesting half a million rows.
@@ -434,9 +578,11 @@ def list_hr_candidates(
         .first()
     )
     if target is None or target.role != "hr":
-        # Same generic 404 shape FastAPI uses elsewhere. Doesn't
-        # distinguish "no such id" from "id belongs to admin" — neither
-        # case is actionable from the admin's perspective.
+        raise HTTPException(status_code=404, detail="HR not found.")
+
+    # Cross-org check for admin callers. Super skips this — they see all.
+    if p.role == "admin" and target.organization_id != p.organization_id:
+        # Same 404 as missing — don't leak which orgs have which HRs.
         raise HTTPException(status_code=404, detail="HR not found.")
 
     # COUNT(*) for the total — matches the WHERE clause of the slice
@@ -492,11 +638,11 @@ def list_hr_candidates(
 @router.post("/users", response_model=UserCreateByAdminResponse, status_code=201)
 def create_user(
     payload: UserCreateByAdminRequest,
-    _admin: HRAdmin = Depends(require_admin_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
     db: Session = Depends(get_db),
 ):
     """
-    Create an HR or admin account. Admin-typed password (hashed
+    Create an HR, admin, or super account. Admin-typed password (hashed
     server-side via bcrypt). After insert, send a welcome email
     containing the login URL + email + plaintext password — best-effort:
     the row is committed even if SMTP fails so the admin can share
@@ -505,11 +651,74 @@ def create_user(
     Refuses to create a user whose email is already in use, regardless of
     the existing row's role. Silent role-flips would be a security
     surprise (a freshly-created "HR" that's actually an admin would
-    inherit admin privileges) — same guard the create_hr.py CLI has,
-    now generalized to both directions.
+    inherit admin privileges).
+
+    Multi-tenancy rules (Step D):
+      D8. Admin can only create users in their own org. payload.role is
+          restricted to 'admin' or 'hr'. payload.organization_id is
+          IGNORED if sent — caller's own org is always used.
+      D9. Super can create users in any org, including new supers.
+          - For role='super': organization_id MUST be None (CHECK
+            constraint enforces this at the DB; we validate it here for
+            a better error message).
+          - For role='admin' or 'hr': organization_id MUST be a valid,
+            non-deleted org id. Required field (no default to caller's
+            org because super has no org).
     """
     email = payload.email.lower()
     name = payload.name.strip()
+
+    # Tenancy: validate and normalize organization_id based on caller's role.
+    target_role = payload.role
+    if p.role == "admin":
+        # Admin creating non-admin/non-hr role → refuse. Admins cannot
+        # mint supers.
+        if target_role not in ("admin", "hr"):
+            raise HTTPException(
+                status_code=403,
+                detail="Admins can only create 'admin' or 'hr' accounts.",
+            )
+        # Admin's organization_id is the only valid target; we override
+        # whatever the payload requested rather than erroring, since the
+        # frontend doesn't send this field for admin callers.
+        target_org_id = p.organization_id
+    else:  # super
+        if target_role == "super":
+            # Super accounts have no org. Reject any attempt to set one.
+            if payload.organization_id is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "role='super' accounts must have organization_id=null "
+                        "(CHECK ck_hr_admins_role_org_consistency)."
+                    ),
+                )
+            target_org_id = None
+        else:
+            # role in ('admin', 'hr'): super must specify which org.
+            if payload.organization_id is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "organization_id is required when creating an "
+                        "'admin' or 'hr' account."
+                    ),
+                )
+            # Validate the org exists and isn't soft-deleted.
+            org = (
+                db.query(Organization)
+                .filter(
+                    Organization.id == payload.organization_id,
+                    Organization.deleted_at.is_(None),
+                )
+                .first()
+            )
+            if org is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Organization id={payload.organization_id} not found.",
+                )
+            target_org_id = org.id
 
     # Soft-deleted accounts don't count as collisions — the partial unique
     # index on email already permits reuse, and re-creating an account
@@ -521,19 +730,25 @@ def create_user(
         .first()
     )
     if existing:
-        # Role-aware error so the admin knows whether to pick a different
-        # email or remove the existing account first.
-        existing_label = "admin" if existing.role == "admin" else "HR"
+        # Role-aware error so the caller knows whether to pick a different
+        # email or remove the existing account first. Note: "in your org"
+        # vs "globally" is irrelevant here — email is globally unique.
+        existing_label = {
+            "super": "super",
+            "admin": "admin",
+            "hr": "HR",
+        }.get(existing.role, existing.role)
         raise HTTPException(
             status_code=409,
-            detail=f"That email is already in use by an {existing_label} account.",
+            detail=f"That email is already in use by a {existing_label} account.",
         )
 
     user = HRAdmin(
         name=name,
         email=email,
         password_hash=hash_password(payload.password),
-        role=payload.role,
+        role=target_role,
+        organization_id=target_org_id,
     )
     db.add(user)
     db.commit()
@@ -557,55 +772,175 @@ def create_user(
         name=user.name,
         email=user.email,
         role=user.role,
+        organization_id=user.organization_id,
         email_status="sent" if email_ok else "failed",
         email_error=email_err,
+    )
+
+@router.patch("/users/{user_id}", response_model=UserUpdateByAdminResponse)
+def update_user(
+    user_id: int,
+    payload: UserUpdateByAdminRequest,
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
+    db: Session = Depends(get_db),
+):
+    """
+    Update an account's name, email, or password. Multi-role: works on
+    HR, admin, and (for super callers) super accounts. Role changes
+    are NOT supported in v1 (decision D6) — admins/HRs/supers stay in
+    their original role for the lifetime of the account.
+
+    Partial update — only fields the caller changes get applied. Sending
+    `null` for a field means "don't touch it" (NOT "clear it").
+
+    Tenancy (Step D):
+      super → can update any user, including other supers.
+      admin → can update users in their OWN ORG only. Cross-org → 404.
+              Super-role targets → 404 (admin can't touch super).
+
+    Constraints:
+      - 404 if user_id doesn't exist or is soft-deleted
+      - 404 if user is outside caller's tenancy (don't leak existence)
+      - 409 if changing email to one that's already in use by another
+        active user
+      - Password is re-hashed if provided; old hash is replaced
+
+    Does NOT send a welcome email on password reset — admin shares the
+    new password manually. Email change does NOT notify the user either —
+    they'll see it next time they log in.
+    """
+    user = (
+        db.query(HRAdmin)
+        .filter(HRAdmin.id == user_id, HRAdmin.deleted_at.is_(None))
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Tenancy check. 404 (not 403) so cross-tenant access doesn't leak
+    # existence. _principal_can_access_user handles the per-role rules.
+    if not _principal_can_access_user(user, p):
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if payload.email is not None:
+        new_email = payload.email.lower()
+        if new_email != user.email:
+            # Email is being changed — check for collisions against other
+            # active users. Soft-deleted accounts don't count.
+            collision = (
+                db.query(HRAdmin)
+                .filter(
+                    HRAdmin.email == new_email,
+                    HRAdmin.deleted_at.is_(None),
+                    HRAdmin.id != user.id,
+                )
+                .first()
+            )
+            if collision:
+                collision_label = {
+                    "super": "super",
+                    "admin": "admin",
+                    "hr": "HR",
+                }.get(collision.role, collision.role)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"That email is already in use by a {collision_label} account.",
+                )
+            user.email = new_email
+
+    if payload.name is not None:
+        user.name = payload.name.strip()
+
+    if payload.password is not None:
+        user.password_hash = hash_password(payload.password)
+        # Bump password_changed_at so any active session for this user is
+        # invalidated on its next request. Same defense as the user's own
+        # change-password flow — without this, an admin-forced password
+        # reset wouldn't kick the affected user's open sessions.
+        user.password_changed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    db.commit()
+    db.refresh(user)
+
+    return UserUpdateByAdminResponse(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
+        organization_id=user.organization_id,
     )
 
 
 @router.delete("/users/{user_id}", status_code=204)
 def delete_user(
     user_id: int,
-    admin: HRAdmin = Depends(require_admin_strict),
+    p: Principal = Depends(require_principal(allow=("super", "admin"), strict=True)),
     db: Session = Depends(get_db),
 ):
     """
-    Soft-delete an HR account. Sets `deleted_at = utcnow()` on the
-    `hr_admins` row; the row stays in the DB so the HR's invitations
-    and the candidate results attached to them are preserved for
-    audits and historical reporting.
+    Soft-delete a user account. Sets `deleted_at = utcnow()` on the
+    `hr_admins` row; the row stays in the DB so the user's invitations
+    and any candidate results attached to them are preserved for audits.
 
-    Constraints:
-      - HR rows only. Admin rows are refused (different concern; would
-        also let an admin nuke a peer accidentally).
-      - Cannot soft-delete a row that's already soft-deleted (idempotent
-        but noisy in logs — return 404 like a missing row).
-      - Self-delete is implicitly impossible because admins are excluded
-        from this endpoint, but we double-check on the id too in case
-        an HR ever hits this somehow (defense in depth).
+    Multi-tenancy rules (Step D):
+      D3. Org must always have ≥1 active admin. If deleting this user
+          would drop the org's admin count to zero, refuse with 422.
+          Applies whether the deletion is admin self-delete OR cross-user.
+      D4. Admin CAN delete themselves IF rule D3 holds.
+      D5. Admin CAN delete peer admins in same org. Cross-org → 404.
+      D6. (out of scope) Role changes — not relevant here.
 
-    The HR's session immediately becomes invalid: the auth dependencies
+    Authorization:
+      super → can delete anyone, including other supers. Rule D3 still
+              applies for any non-super target (preserves org invariant).
+      admin → can delete users in their own org (any role, including peer
+              admins and themselves, subject to D3).
+
+    The user's session immediately becomes invalid: the auth dependencies
     + login query all filter `deleted_at IS NULL`, so any in-flight
-    request from a deleted HR's JWT/session token gets a 401 on its
-    next call. Their email becomes reusable thanks to the partial
-    unique index from migration b7e2c3d8a91f.
+    request from a deleted user's JWT/session token gets a 401 on its
+    next call.
     """
     target = db.query(HRAdmin).filter(HRAdmin.id == user_id).first()
     if target is None or target.deleted_at is not None:
         # Already-deleted is treated as "not found" — same surface to
         # the client either way, and it makes the endpoint idempotent
         # in the practical sense (a second click doesn't error).
-        raise HTTPException(status_code=404, detail="HR not found.")
+        raise HTTPException(status_code=404, detail="User not found.")
 
-    if target.role != "hr":
-        # Refusing here keeps the surface small. Admin-on-admin deletion
-        # is a separate, riskier flow that needs its own UI/auth gate.
-        raise HTTPException(
-            status_code=400,
-            detail="Only HR accounts can be deleted from this endpoint.",
+    # Tenancy check. Admin can't see cross-org users or super users; both
+    # return 404 (don't leak existence). Super has no restriction.
+    if not _principal_can_access_user(target, p):
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Rule D3: every org must always have at least one active admin.
+    # This applies when deleting any admin, including self-delete.
+    # Super accounts have organization_id=None, so the rule doesn't apply
+    # when deleting a super (no org to keep an invariant on).
+    if target.role == "admin" and target.organization_id is not None:
+        remaining_admins = (
+            _count_active_admins_in_org(db, target.organization_id) - 1
         )
+        if remaining_admins < 1:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Cannot delete the last active admin in this organization. "
+                    "Create another admin first, or contact a super-admin to "
+                    "assist."
+                ),
+            )
 
-    if target.id == admin.id:  # belt-and-suspenders; admin.role != 'hr' so unreachable
-        raise HTTPException(status_code=400, detail="You cannot delete yourself.")
+    # Rule D4: admin self-delete is allowed (subject to D3 above, which
+    # already passed if we got here). No special handling needed — just
+    # mark deleted_at. The admin's NEXT request will 401 because
+    # _resolve_cookie_user / _resolve_jwt_user filter `deleted_at IS NULL`.
+    #
+    # Note: we DON'T clear the admin's session cookie server-side here.
+    # The cookie is invalidated on next request anyway, and clearing it
+    # from this handler would require special-case logic that adds risk
+    # for marginal benefit (the admin probably closed the tab right after
+    # confirming the delete).
 
     target.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()

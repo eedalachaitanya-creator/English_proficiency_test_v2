@@ -46,6 +46,28 @@ def _enforce_password_complexity(v: str) -> str:
 
 
 # ============================================================
+# Organizations — multi-tenancy tenant table.
+# See docs/superpowers/specs/2026-05-12-multi-tenancy.md.
+# ============================================================
+class OrganizationOut(BaseModel):
+    """Public shape of an organization. Used in login responses (so the
+    frontend knows which org the user belongs to) and in super-facing
+    endpoints that list orgs.
+
+    `disabled_at` is intentionally exposed: org-admins of a disabled
+    org should see WHY their account can't do anything. The login
+    endpoint won't return this body for a disabled org's users (they
+    get 401), but super-facing org listings need it."""
+    id: int
+    name: str
+    slug: str
+    disabled_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================================
 # HR auth
 # ============================================================
 class HRLoginRequest(BaseModel):
@@ -62,6 +84,16 @@ class HRLoginResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
+    # Role of the logged-in user. Always 'hr' for this response shape
+    # (the route enforces it), but exposing it makes the frontend's
+    # type discriminator simpler — one Principal type can hold HR,
+    # admin, or super shape.
+    role: str = "hr"
+    # The organization this user belongs to. None only if role='super';
+    # for HR it's always set. Frontend can show "Logged in as HR @ Org"
+    # in the topbar. Optional on the schema so older /me responses
+    # that don't include it stay parseable on rolling deploys.
+    organization: Optional[OrganizationOut] = None
     # JWT tokens. Populated on /login; None on /me — /me is an identity
     # check, not a credential issuance, so it shouldn't be minting new
     # tokens server-side just to fit the response shape.
@@ -170,7 +202,11 @@ class AdminLoginResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
-    role: str  # always "admin" — the route returns 401 for any other role
+    role: str  # "super" or "admin" — the route returns 401 for any other role
+    # The org this admin belongs to. None when role='super' (supers have
+    # no org). Set when role='admin'. Frontend shows org name in the
+    # admin-dashboard header.
+    organization: Optional[OrganizationOut] = None
     access_token: str | None = None
     refresh_token: str | None = None
     token_type: str | None = "bearer"
@@ -194,14 +230,20 @@ class AdminRefreshTokenResponse(BaseModel):
 
 class AdminUserSummary(BaseModel):
     """One row in GET /api/admin/users — the admin dashboard's top-level
-    table. Lists every row in hr_admins (both roles) with a count of how
-    many invitations they've sent. Admins always have candidate_count=0
-    since they can't create invitations."""
+    table. Lists every row in hr_admins with a count of how many
+    invitations they've sent. Admins and supers always have
+    candidate_count=0 since they can't create invitations.
+
+    organization_id: the user's org. None for super. Required for
+    admin/hr but Optional on the schema so legacy callers can ignore
+    it. The frontend's super dashboard reads it to show org names
+    alongside each user."""
     id: int
     name: str
     email: EmailStr
-    role: str  # "hr" or "admin" — same allowed values as HRAdmin.role
-    candidate_count: int  # 0 for admins; total invitations sent for HRs
+    role: str  # "super", "admin", or "hr"
+    organization_id: Optional[int] = None
+    candidate_count: int  # 0 for admins/supers; total invitations sent for HRs
     created_at: datetime
 
 
@@ -211,11 +253,22 @@ class UserCreateByAdminRequest(BaseModel):
     the create_hr.py CLI rule for consistency.
 
     `role` decides whether the new account is a peer admin or an HR.
+    Multi-tenancy adds 'super' — only super can create supers; this is
+    enforced at the route layer in Step D, not here.
+
+    `organization_id` is the org to place the new user in. Only super
+    can target an arbitrary org; admin's own org is filled in by the
+    route layer (admins can't create users in other orgs). For role='super'
+    the field must be None — enforced at the route layer.
     """
     name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
-    role: Literal["hr", "admin"] = "hr"
+    role: Literal["super", "admin", "hr"] = "hr"
+    # Optional: omit when admin is creating a user in their own org
+    # (route fills it in). Required when super is creating a user in
+    # a specific org. None means "global" (only valid for role='super').
+    organization_id: Optional[int] = None
 
     @field_validator("password")
     @classmethod
@@ -246,9 +299,45 @@ class UserCreateByAdminResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
-    role: Literal["hr", "admin"]
+    role: Literal["super", "admin", "hr"]
+    organization_id: Optional[int] = None
     email_status: str  # "sent" | "failed" | "pending"
     email_error: Optional[str] = None
+
+class UserUpdateByAdminRequest(BaseModel):
+    """PATCH /api/admin/users/{user_id}. All fields optional — admin
+    edits only what they want to change. Sending `password=null` means
+    "leave password alone" (NOT "clear it"). Email is re-validated for
+    uniqueness if changed. Role is intentionally NOT editable here —
+    promoting/demoting between HR and admin has knock-on effects on
+    candidate ownership that v1 doesn't address.
+    """
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def reject_whitespace(cls, v: Optional[str]) -> Optional[str]:
+        """Same protection as UserCreateByAdminRequest.password."""
+        if v is None:
+            return v
+        if not v.strip() or v != v.strip():
+            raise ValueError(
+                "Password cannot start with, end with, or be only whitespace."
+            )
+        return v
+
+
+class UserUpdateByAdminResponse(BaseModel):
+    """Response after updating an HR or admin. No email field since
+    update doesn't send a new welcome email — admin shares the new
+    password manually if they reset it."""
+    id: int
+    name: str
+    email: EmailStr
+    role: Literal["super", "admin", "hr"]
+    organization_id: Optional[int] = None
 
 
 # ============================================================
@@ -749,3 +838,91 @@ class BulkImportResult(BaseModel):
     this as 'Imported X items, Y errors:' followed by the error strings."""
     created: int
     errors: list[str] = []
+
+
+    # ============================================================
+# Super-admin auth (added in Step E)
+# ============================================================
+class SuperLoginRequest(BaseModel):
+    """POST /api/super/login. Mirrors HRLoginRequest and AdminLoginRequest;
+    kept as a distinct class so future super-only fields (e.g. 2FA,
+    higher-privilege MFA) don't pollute the lower-tier login schemas."""
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+ 
+ 
+class SuperLoginResponse(BaseModel):
+    """Returned by /api/super/login. Includes JWT pair + must_change_password.
+    Always returns role='super' since the route enforces it.
+ 
+    No `organization` field because super has no org (organization_id IS NULL
+    by ck_hr_admins_role_org_consistency)."""
+    id: int
+    name: str
+    email: EmailStr
+    role: str  # always "super"
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = "bearer"
+    expires_in: int | None = None
+    must_change_password: bool = False
+ 
+ 
+class SuperMeResponse(BaseModel):
+    """GET /api/super/me. Identity-only response (no tokens minted)."""
+    id: int
+    name: str
+    email: EmailStr
+    role: str  # always "super"
+    must_change_password: bool = False
+ 
+ 
+# ============================================================
+# Organization management (added in Step E)
+# ============================================================
+class OrganizationCreateRequest(BaseModel):
+    """POST /api/super/organizations.
+ 
+    Only `name` is taken from the client — slug is auto-derived server-side
+    (see _derive_unique_slug in routes/super.py). This prevents super from
+    creating an org with slug='api', 'login', etc. that would collide with
+    URL paths, and keeps slugs predictable across the system.
+ 
+    Name is min 1 char post-trim (validator enforced server-side after
+    .strip()), max 150 to match the column."""
+    name: str = Field(min_length=1, max_length=150)
+ 
+ 
+class OrganizationRenameRequest(BaseModel):
+    """PATCH /api/super/organizations/{id}.
+ 
+    Renames only the display name. Slug is immutable for the lifetime of
+    the org (decision E2) so any downstream system that references the
+    slug (e.g. URL paths, external integrations) doesn't break on rename."""
+    name: str = Field(min_length=1, max_length=150)
+ 
+ 
+class OrganizationDetail(BaseModel):
+    """GET /api/super/organizations/{id}. Org row plus light usage stats.
+ 
+    Counts:
+      admin_count                  — non-soft-deleted users with role='admin'
+      hr_count                     — non-soft-deleted users with role='hr'
+      invitation_count             — every invitation ever for this org
+      submitted_invitation_count   — subset with submitted_at NOT NULL
+ 
+    Why expose these here instead of separate endpoints? Super's dashboard
+    needs them on the org-detail page anyway, and computing four scalar
+    counts in one round-trip is far cheaper than four endpoint calls."""
+    id: int
+    name: str
+    slug: str
+    disabled_at: Optional[datetime] = None
+    created_at: datetime
+    admin_count: int
+    hr_count: int
+    invitation_count: int
+    submitted_invitation_count: int
+ 
+    class Config:
+        from_attributes = True

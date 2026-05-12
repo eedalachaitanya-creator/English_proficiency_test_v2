@@ -7,12 +7,18 @@ python-jose directly. Keeps the auth surface small and easy to audit.
 
 Token shape (payload):
     {
-        "sub": <user_id>,         # subject — the HRAdmin.id
-        "role": "hr" | "admin",   # which routes this token can hit
-        "type": "access" | "refresh",  # which kind of token this is
-        "iat": <unix-ts>,         # issued-at
-        "exp": <unix-ts>,         # expiry
-        "iss": "ept-backend"      # issuer — sanity check on validation
+        "sub": <user_id>,           # subject — the HRAdmin.id (as string)
+        "role": "super" | "admin" | "hr",
+        "type": "access" | "refresh",
+        "iat": <unix-ts>,           # issued-at
+        "exp": <unix-ts>,           # expiry
+        "iss": "ept-backend",
+        "pw_changed_at_iso":        # OPTIONAL on legacy tokens; required on
+            "<iso8601>" | null      # any token minted by this code path.
+                                    # Mirrors the cookie session's `pw_v` field
+                                    # and is used by auth.py to invalidate tokens
+                                    # after a password change. See
+                                    # auth._resolve_jwt_user for the check.
     }
 
 Signing: HS256 with JWT_SECRET_KEY. Symmetric — the same key that signs
@@ -32,7 +38,7 @@ Why two token types:
 """
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from jose import jwt, JWTError
@@ -64,29 +70,64 @@ REFRESH_TOKEN_DAYS = int(os.getenv("JWT_REFRESH_DAYS", "1"))
 
 # ---------------- Public API ----------------
 
-Role = Literal["hr", "admin"]
+# Expanded for multi-tenancy. 'super' tokens grant the Stixis-internal
+# god-mode access; 'admin' tokens are per-org admins; 'hr' tokens are
+# per-org HR users. require_principal in auth.py enforces what each role
+# can do on each endpoint.
+Role = Literal["super", "admin", "hr"]
 TokenType = Literal["access", "refresh"]
 
 
-def create_access_token(user_id: int, role: Role) -> str:
-    """Mint a short-lived access token. Sent on every API call."""
-    return _create_token(user_id, role, "access", timedelta(minutes=ACCESS_TOKEN_MINUTES))
+def create_access_token(
+    user_id: int,
+    role: Role,
+    pw_changed_at_iso: Optional[str] = None,
+) -> str:
+    """
+    Mint a short-lived access token. Sent on every API call.
+
+    pw_changed_at_iso: the user's current password_changed_at as an
+    ISO-8601 string. Embedded in the token so auth._resolve_jwt_user
+    can reject tokens minted before a password rotation. Optional only
+    for backward compatibility — every call site in routes/hr.py and
+    routes/admin.py is being updated to pass it.
+    """
+    return _create_token(
+        user_id, role, "access",
+        timedelta(minutes=ACCESS_TOKEN_MINUTES),
+        pw_changed_at_iso,
+    )
 
 
-def create_refresh_token(user_id: int, role: Role) -> str:
+def create_refresh_token(
+    user_id: int,
+    role: Role,
+    pw_changed_at_iso: Optional[str] = None,
+) -> str:
     """Mint a longer-lived refresh token. Used only by /refresh endpoint."""
-    return _create_token(user_id, role, "refresh", timedelta(days=REFRESH_TOKEN_DAYS))
+    return _create_token(
+        user_id, role, "refresh",
+        timedelta(days=REFRESH_TOKEN_DAYS),
+        pw_changed_at_iso,
+    )
 
 
-def create_token_pair(user_id: int, role: Role) -> dict:
+def create_token_pair(
+    user_id: int,
+    role: Role,
+    pw_changed_at_iso: Optional[str] = None,
+) -> dict:
     """
     Convenience: mint both tokens in one call. This is what login endpoints
     return — the response body shape matches the OAuth2 password-grant
     convention so any standard JWT client library can consume it.
+
+    pw_changed_at_iso: see create_access_token. Pass the user's current
+    password_changed_at so the token can be invalidated on rotation.
     """
     return {
-        "access_token": create_access_token(user_id, role),
-        "refresh_token": create_refresh_token(user_id, role),
+        "access_token": create_access_token(user_id, role, pw_changed_at_iso),
+        "refresh_token": create_refresh_token(user_id, role, pw_changed_at_iso),
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_MINUTES * 60,  # seconds, OAuth2 convention
     }
@@ -108,6 +149,9 @@ def decode_token(token: str, expected_type: TokenType) -> dict:
 
     The expected_type check is critical — it prevents a refresh token
     from being used to authenticate an API call (and vice versa).
+
+    Note: pw_changed_at_iso is NOT checked here. That belongs in auth.py
+    where the live DB row is available for comparison.
     """
     try:
         payload = jwt.decode(
@@ -132,10 +176,16 @@ def decode_token(token: str, expected_type: TokenType) -> dict:
 
 # ---------------- Internal ----------------
 
-def _create_token(user_id: int, role: Role, token_type: TokenType, lifetime: timedelta) -> str:
+def _create_token(
+    user_id: int,
+    role: Role,
+    token_type: TokenType,
+    lifetime: timedelta,
+    pw_changed_at_iso: Optional[str],
+) -> str:
     """Shared token creation logic. Not for external use — call the named helpers."""
     now = datetime.now(timezone.utc)
-    payload = {
+    payload: dict = {
         "sub": str(user_id),  # JWT spec says sub is a string; jose enforces this
         "role": role,
         "type": token_type,
@@ -143,4 +193,11 @@ def _create_token(user_id: int, role: Role, token_type: TokenType, lifetime: tim
         "exp": now + lifetime,
         "iss": JWT_ISSUER,
     }
+    # Only include the claim when given. Legacy callers that don't yet
+    # pass it produce tokens without the claim, which auth.py treats as
+    # "fall back to allowing" — that's the safe default for an in-flight
+    # rolling upgrade where some sessions are mid-existence.
+    if pw_changed_at_iso is not None:
+        payload["pw_changed_at_iso"] = pw_changed_at_iso
+
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)

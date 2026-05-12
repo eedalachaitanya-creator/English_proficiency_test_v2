@@ -4,9 +4,24 @@ SQLAlchemy ORM models — the database schema in Python form.
 Each class = one table. Each Column = one column.
 Relationships use back_populates so we can navigate both directions.
 
-Schema mirror of docs/requirements.md:
+Schema mirror of docs/requirements.md + multi-tenancy migrations
+(2026-05-12, blocks 1-5):
+  organizations (NEW),
   hr_admins, passages, questions, speaking_topics,
-  invitations, mcq_answers, audio_recordings, scores
+  invitations, mcq_answers, audio_recordings, scores,
+  writing_topics, writing_responses, supported_timezones, system_settings.
+
+Multi-tenancy notes (see docs/superpowers/specs/2026-05-12-multi-tenancy.md):
+  - organizations is the new tenant table.
+  - hr_admins.organization_id is NULL only when role='super'.
+    Enforced by ck_hr_admins_role_org_consistency at the DB layer.
+  - invitations.organization_id is NOT NULL — every invitation belongs
+    to exactly one org. Denormalized from the inviting HR's org so we
+    don't need a JOIN on every tenant-scoped query.
+  - The four content tables (passages, questions, writing_topics,
+    speaking_topics) have nullable organization_id. NULL = global
+    content, visible to every org, editable only by super. Non-NULL
+    = private to that org.
 """
 from datetime import datetime, timezone
 from sqlalchemy import (
@@ -28,21 +43,99 @@ def _utcnow():
 
 
 # ------------------------------------------------------------------
+# Organizations — the tenant table introduced in 2026-05-12.
+# ------------------------------------------------------------------
+class Organization(Base):
+    """
+    A customer company using the platform. Every HR/admin user, every
+    invitation, and (optionally) every content row belongs to one
+    organization. The first row, id=1 'Stixis' (slug 'stixis'), is
+    seeded by the migration as the home for all pre-multi-tenancy data.
+
+    Soft-disable vs soft-delete:
+      disabled_at — temporarily suspend the org. HRs/admins of this
+                    org get 401 on next request via require_principal,
+                    but in-flight candidate tests continue running
+                    (the candidate flow doesn't authenticate as an HR;
+                    it uses the invitation token + session). This means
+                    a disable doesn't kick a candidate mid-test.
+      deleted_at  — soft-delete. The route layer refuses to delete an
+                    org that still has any non-soft-deleted hr_admins.
+                    Force the cleanup explicitly so nothing is lost by
+                    accident.
+
+    Slug is the url-safe lowercase identifier (e.g. 'stixis', 'acme-corp')
+    used in super-facing UI and logs. Pattern enforced at the schema
+    layer: ^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$. Not exposed to candidates.
+    """
+    __tablename__ = "organizations"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(150), unique=True, nullable=False)
+    slug = Column(String(60), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    # Soft-disable: org's users can't log in but candidate tests
+    # continue. Distinct from deleted_at — recoverable by clearing
+    # the column.
+    disabled_at = Column(DateTime, nullable=True)
+    # Soft-delete: cascade refusal at route layer (refuse if any
+    # active hr_admins.organization_id = this.id). Set ONLY by super
+    # via /api/super/organizations/{id}/delete (introduced in Step E).
+    deleted_at = Column(DateTime, nullable=True)
+
+    # Users belonging to this org. Cascade is intentionally NOT set:
+    # we soft-delete via deleted_at, never hard-delete rows that have
+    # children. If a hard-delete ever becomes necessary (e.g. GDPR),
+    # the caller handles cascade explicitly to avoid surprise wipes.
+    hr_admins = relationship("HRAdmin", back_populates="organization")
+    invitations = relationship("Invitation", back_populates="organization")
+
+
+# ------------------------------------------------------------------
 # Users
 # ------------------------------------------------------------------
 class HRAdmin(Base):
     """
-    Account row for both HR users and admins. The role column distinguishes:
-      - 'hr'    — uses the candidate dashboard, creates invitations, views results.
-      - 'admin' — uses the admin portal only, creates HR accounts.
-    These are strictly disjoint roles, not a privilege hierarchy. See
-    docs/superpowers/specs/2026-05-04-admin-portal-design.md.
+    Account row for super, admin, and HR users. The role column
+    distinguishes:
+      - 'super' — Stixis-internal god-mode account. Sees data across all
+                  orgs. organization_id IS NULL for these (no org).
+                  Creates/disables orgs, creates admins for orgs, manages
+                  other supers.
+      - 'admin' — Per-org administrator. Manages HRs in their org and
+                  authors org-private content. Sees all invitations in
+                  their org. organization_id IS NOT NULL.
+      - 'hr'    — Per-org HR user. Creates invitations and views their
+                  own candidates' results. organization_id IS NOT NULL.
+
+    The three roles are strictly disjoint, not a privilege hierarchy.
+    See docs/superpowers/specs/2026-05-12-multi-tenancy.md.
+
+    Database-level safety nets (added in migration block 5):
+      ck_hr_admins_role
+          role IN ('super', 'admin', 'hr')
+      ck_hr_admins_role_org_consistency
+          (role = 'super' AND organization_id IS NULL)
+          OR (role IN ('admin', 'hr') AND organization_id IS NOT NULL)
+
+    These mean a bug in application code that tries to insert a super
+    with an org, or an admin without one, fails at the DB rather than
+    silently corrupting tenancy.
     """
     __tablename__ = "hr_admins"
     __table_args__ = (
+        # Mirror of the DB-side CHECK constraints. SQLAlchemy enforces
+        # these on create_all but the production schema is managed by
+        # the SQL we ran in pgAdmin (Block 5) — these definitions stay
+        # in sync as documentation and for tests that use create_all.
         CheckConstraint(
-            "role IN ('admin', 'hr')",
+            "role IN ('super', 'admin', 'hr')",
             name="ck_hr_admins_role",
+        ),
+        CheckConstraint(
+            "(role = 'super' AND organization_id IS NULL) "
+            "OR (role IN ('admin', 'hr') AND organization_id IS NOT NULL)",
+            name="ck_hr_admins_role_org_consistency",
         ),
     )
 
@@ -51,6 +144,15 @@ class HRAdmin(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(10), default="hr", nullable=False)
+    # The tenant pointer. NULL for super, set for admin/hr. The CHECK
+    # constraint above keeps this honest at the DB level. Indexed
+    # because every admin-level query filters on it.
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     # Bumped on password rotation (login + change-password). Used to
     # invalidate other sessions for the same user — see auth.py
@@ -70,8 +172,11 @@ class HRAdmin(Base):
     # `deleted_at IS NULL` to hide soft-deleted accounts.
     deleted_at = Column(DateTime, nullable=True)
 
-    # Each HR has many invitations they've sent. Admins won't have any.
+    # Each HR has many invitations they've sent. Admins and supers
+    # won't have any (admins manage HRs, supers manage orgs).
     invitations = relationship("Invitation", back_populates="hr", cascade="all, delete-orphan")
+    # The org this user belongs to. NULL only when role='super'.
+    organization = relationship("Organization", back_populates="hr_admins")
 
 
 # ------------------------------------------------------------------
@@ -86,6 +191,16 @@ class Passage(Base):
     difficulty = Column(String(20), nullable=False, index=True)  # 'intermediate' | 'expert'
     topic = Column(String(100))
     word_count = Column(Integer)
+    # Tenant pointer for content. NULL = global content (seeded by
+    # Stixis, visible to every org, editable only by super). Non-NULL
+    # = private to that org (editable by admin/HR of that org).
+    # Pre-multi-tenancy content stays NULL after migration block 3.
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     disabled_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
@@ -116,6 +231,14 @@ class Question(Base):
     stem = Column(Text, nullable=False)
     options = Column(JSON, nullable=False)        # list[str], length 4
     correct_answer = Column(Integer, nullable=False)  # 0..3 (index into options)
+    # See Passage.organization_id — same semantics. NULL = global,
+    # non-NULL = private to that org.
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     # When set, row is "disabled" — visible to HR but excluded from new
     # invitations. Toggleable via /api/hr-content/<resource>/{id}/toggle-disabled.
@@ -138,10 +261,17 @@ class SpeakingTopic(Base):
     prompt_text = Column(Text, nullable=False)
     difficulty = Column(String(20), nullable=False, index=True)  # intermediate | expert
     category = Column(String(100))
+    # See Passage.organization_id — same semantics.
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, default=_utcnow, nullable=False)
-   
+
     disabled_at = Column(DateTime, nullable=True)
-   
+
     deleted_at = Column(DateTime, nullable=True)
 
 
@@ -152,6 +282,13 @@ class Invitation(Base):
     """
     One invitation = one candidate's chance to take the test.
     The token in the URL points here. All candidate state hangs off this row.
+
+    Tenancy: organization_id is denormalized from the inviting HR's org
+    at create_invite time and is NOT NULL on every row. Tenant-scoped
+    queries filter on this column directly — never JOIN to hr_admins to
+    derive it on the fly. The denormalization invariant
+    (invitations.organization_id == hr_admins.organization_id for the
+    inviting HR) is maintained by the route layer.
     """
     __tablename__ = "invitations"
 
@@ -162,6 +299,14 @@ class Invitation(Base):
     difficulty = Column(String(20), nullable=False)  # intermediate | expert
 
     hr_admin_id = Column(Integer, ForeignKey("hr_admins.id"), nullable=False, index=True)
+    # Tenancy pointer. Required (NOT NULL after migration block 4).
+    # Denormalized from hr_admin → hr_admins.organization_id.
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        nullable=False,
+        index=True,
+    )
 
     # Assignment (filled when candidate first opens URL — locks the content).
     passage_id = Column(Integer, ForeignKey("passages.id"), nullable=True)
@@ -197,7 +342,9 @@ class Invitation(Base):
     speaking_seconds = Column(Integer, default=10 * 60, nullable=False)
 
     # Access code (6-digit) candidate must enter after clicking URL.
-    # Lockout: 5 wrong attempts -> code_locked=True, HR must regenerate.
+    # Lockout: MAX_CODE_ATTEMPTS wrong attempts -> code_locked=True,
+    # HR must regenerate. (See config.MAX_CODE_ATTEMPTS — currently 3,
+    # not 5 as an older comment claimed.)
     access_code = Column(String(6), nullable=False)
     failed_code_attempts = Column(Integer, default=0, nullable=False)
     code_locked = Column(Boolean, default=False, nullable=False)
@@ -269,6 +416,7 @@ class Invitation(Base):
     teams_meeting_status = Column(String(20), nullable=True)
 
     hr = relationship("HRAdmin", back_populates="invitations")
+    organization = relationship("Organization", back_populates="invitations")
     passage = relationship("Passage")
     writing_topic = relationship("WritingTopic")
     mcq_answers = relationship("MCQAnswer", back_populates="invitation", cascade="all, delete-orphan")
@@ -322,10 +470,17 @@ class WritingTopic(Base):
     min_words = Column(Integer, nullable=False, default=200)
     max_words = Column(Integer, nullable=False, default=300)
     category = Column(String(100))
+    # See Passage.organization_id — same semantics.
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, default=_utcnow, nullable=False)
-    
+
     disabled_at = Column(DateTime, nullable=True)
-   
+
     deleted_at = Column(DateTime, nullable=True)
 
 

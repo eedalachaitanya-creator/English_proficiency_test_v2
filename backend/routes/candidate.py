@@ -146,13 +146,46 @@ def _assign_content(inv: Invitation, db: Session):
     Excluded sections leave their assignment fields as None — the explicit
     "this section was not part of the test" signal that scoring + the
     frontend both rely on.
+
+    Tenancy (Step C): content selection is scoped to the invitation's
+    organization. Each content table query picks from:
+      - rows owned by inv.organization_id (org-private content), OR
+      - rows with organization_id IS NULL (globally-seeded content
+        visible to every org).
+
+    The org-id filter is built once below as a SQLAlchemy clause and
+    applied to all four content queries identically. If a query had
+    to be added later, forgetting the filter would be a cross-org leak,
+    so keeping the filter shape DRY is part of the safety design.
+
+    Why filter here AND in routes/hr_content.py? Because they answer
+    different questions:
+      - hr_content.py filters by the CALLER's principal (HR/admin/super)
+        to control which rows they SEE in management UIs.
+      - here we filter by the INVITATION's org (denormalized on the
+        Invitation row) to control which content gets ASSIGNED to a
+        candidate. The candidate has no principal — the invitation
+        carries the org context.
     """
+    # Tenancy filter for content rows. Same shape used 4 times below.
+    # Imported at the top of the function so the cost is bounded; SQLAlchemy
+    # builds the clause lazily so this is essentially free.
+    from sqlalchemy import or_
+
+    def _org_filter(model):
+        """Returns the WHERE clause: row's org matches invitation's org OR row is global."""
+        return or_(
+            model.organization_id == inv.organization_id,
+            model.organization_id.is_(None),
+        )
+
     # ---- Reading: passage + question set ----
     if inv.include_reading:
         passages = db.query(Passage).filter(
             Passage.difficulty == inv.difficulty,
             Passage.deleted_at.is_(None),
             Passage.disabled_at.is_(None),
+            _org_filter(Passage),
         ).all()
         if not passages:
             raise HTTPException(
@@ -163,7 +196,16 @@ def _assign_content(inv: Invitation, db: Session):
         passage = random.choice(passages)
         inv.passage_id = passage.id
 
-        # RC questions tied to this passage (all of them — typically 4-5)
+        # RC questions tied to this passage (all of them — typically 4-5).
+        # We don't apply _org_filter here: the passage itself was already
+        # tenancy-filtered, and any question tied to that passage by
+        # passage_id is reachable through the passage's org. If somehow
+        # an out-of-org question was attached to a same-org passage
+        # (data corruption), it's still inseparable from the passage
+        # and filtering it out here would break the test (passage with
+        # zero RC questions). The right fix for that case is at content
+        # creation time (create_question enforces passage visibility),
+        # not at assignment time.
         rc_questions = (
             db.query(Question)
             .filter(
@@ -189,6 +231,7 @@ def _assign_content(inv: Invitation, db: Session):
                 Question.question_type.in_(["grammar", "vocabulary", "fill_blank"]),
                 Question.deleted_at.is_(None),
                 Question.disabled_at.is_(None),
+                _org_filter(Question),
             )
             .all()
         )
@@ -213,6 +256,7 @@ def _assign_content(inv: Invitation, db: Session):
             SpeakingTopic.difficulty == inv.difficulty,
             SpeakingTopic.deleted_at.is_(None),
             SpeakingTopic.disabled_at.is_(None),
+            _org_filter(SpeakingTopic),
         ).all()
         if len(topics) < SPEAKING_QUESTIONS_PER_TEST:
             raise HTTPException(
@@ -231,6 +275,7 @@ def _assign_content(inv: Invitation, db: Session):
             WritingTopic.difficulty == inv.difficulty,
             WritingTopic.deleted_at.is_(None),
             WritingTopic.disabled_at.is_(None),
+            _org_filter(WritingTopic),
         ).all()
         if not writing_topics:
             raise HTTPException(

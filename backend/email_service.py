@@ -522,6 +522,7 @@ def _hr_confirmation_html_body(
         </p>
 
         <!-- Calendar reference -->
+        <!-- Calendar reference -->
         <div style="margin:0 0 24px 0;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:14px 18px;">
           <p style="margin:0;font-size:13px;color:#1e40af;line-height:1.55;">
             <strong>Already on your calendar:</strong> this meeting has been
@@ -605,7 +606,7 @@ def send_temp_password_email(
         f"so treat the contents as sensitive.\n"
         f"\n"
         f"Best regards,\n"
-        f"Stixis HR Team\n"
+        f"HR Team\n"
         f"\n"
         f"---\n"
         f"This is an automated email. Do not forward your password to anyone."
@@ -739,7 +740,7 @@ def _temp_password_html_body(
 
         <!-- Signature -->
         <p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>
-        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">Stixis HR Team</p>
+        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">HR Team</p>
 
       </div>
 
@@ -822,7 +823,7 @@ def send_user_welcome_email(
         f"If you weren't expecting this email, please reply to let us know.\n"
         f"\n"
         f"Best regards,\n"
-        f"Stixis HR Team\n"
+        f"HR Team\n"
         f"\n"
         f"---\n"
         f"This is an automated email. Do not forward your password to anyone."
@@ -962,7 +963,7 @@ def _user_welcome_html_body(
 
         <!-- Signature -->
         <p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>
-        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">Stixis HR Team</p>
+        <p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">HR Team</p>
 
       </div>
 
@@ -1233,12 +1234,12 @@ def _plain_text_body(
         if window_str else ""
     )
 
-    # The signature uses HR's name if known, otherwise just "Stixis HR Team"
+    # The signature uses HR's name if known, otherwise just "HR Team"
     signature = (
         f"Best regards,\n"
         f"{hr_name}\n"
-        f"Stixis HR Team"
-    ) if hr_name else "Best regards,\nStixis HR Team"
+        f"HR Team"
+    ) if hr_name else "Best regards,\nHR Team"
 
     # Build the INSTRUCTIONS block. Two variants:
     #   - With Teams URL (interview flow): 4 steps, "Join Teams call" first,
@@ -1419,12 +1420,12 @@ def _html_body(
         signature_html = (
             f'<p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>'
             f'<p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">{hr_name}</p>'
-            f'<p style="margin:0;font-size:13px;color:#6b7280;line-height:1.5;">Stixis HR Team</p>'
+            f'<p style="margin:0;font-size:13px;color:#6b7280;line-height:1.5;">HR Team</p>'
         )
     else:
         signature_html = (
             '<p style="margin:0 0 4px 0;font-size:14px;color:#374151;line-height:1.5;">Best regards,</p>'
-            '<p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">Stixis HR Team</p>'
+            '<p style="margin:0;font-size:14px;color:#111827;font-weight:600;line-height:1.5;">HR Team</p>'
         )
 
     return f"""\
@@ -1436,7 +1437,7 @@ def _html_body(
       <!-- Header -->
       <div style="background:#1e3a8a;padding:24px 32px;color:#ffffff;">
         <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.2px;">FluentiQ &middot; English Proficiency Assessment</h1>
-        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">Stixis Recruitment Assessment</p>
+        <p style="margin:4px 0 0 0;font-size:13px;color:#bfdbfe;">Recruitment Assessment</p>
       </div>
 
       <!-- Body -->
@@ -1505,7 +1506,7 @@ def _html_body(
       <!-- Footer -->
       <div style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:18px 32px;">
         <p style="margin:0;font-size:11px;color:#9ca3af;line-height:1.5;text-align:center;">
-          This is an automated email from the Stixis Recruitment Assessment platform.<br>
+          This is an automated email from the Recruitment Assessment platform.<br>
           Please do not forward the access code to anyone else.
         </p>
       </div>

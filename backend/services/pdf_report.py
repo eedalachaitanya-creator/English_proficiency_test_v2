@@ -1,33 +1,25 @@
-"""
-PDF report generator for a single candidate's assessment results.
+"""PDF report generator for a single candidate's assessment results.
 
 Called from routes/hr_reports.py via build_candidate_pdf(). Returns the PDF
 as bytes (caller wraps in a StreamingResponse).
 
-DESIGN DECISIONS
+Layout: McKinsey/consulting-deliverable style.
+  - Left-aligned title block
+  - Navy section bars between sections
+  - Full-width tables with navy headers
+  - Page header strip + footer on every page
+  - Verdict shown only in the Section Summary table (no prose lede)
 
-1. ReportLab Platypus (high-level "flowables" API), not the low-level canvas.
-   Platypus auto-handles page breaks, table layout, and paragraph wrapping.
-   Page breaks happen naturally when content overflows — we don't need to
-   manually paginate audio transcripts of unknown length.
+Palette: navy / white / light gray. No orange, no SaaS-style elements.
+ATS-compatible Helvetica throughout.
 
-2. One PDF per candidate. Generated synchronously on request (200-500ms typical).
-   No caching — these get downloaded once per candidate per hiring decision.
-
-3. All sections are conditional on whether they were INCLUDED in the test.
-   A reading-only invitation produces a PDF with only the reading section.
-   This matches how the HR dashboard already shows "—" for excluded sections.
-
-4. NO embedded audio. PDFs can't play audio reliably, so HR uses the dashboard
-   for that. The PDF is for sharing with hiring managers who need numbers
-   and transcripts in one document.
-
-5. Color palette is intentionally subdued — this goes to senior managers and
-   sometimes to candidates themselves. No "rejected in red" because that's
-   hostile. The rating is shown as plain text with a colored bar.
+Function signature is identical to the previous pdf_report.py — drop-in
+replacement. routes/hr_reports.py does not need to change.
 """
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Optional
@@ -39,176 +31,86 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    PageBreak,
-    KeepTogether,
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether,
+    HRFlowable,
 )
+from reportlab.lib.utils import ImageReader
 
 from models import Invitation, Score, AudioRecording, WritingResponse, WritingTopic, SpeakingTopic
 
 
-# ------------------------------------------------------------------
-# Styles
-# ------------------------------------------------------------------
-# These build on ReportLab's getSampleStyleSheet() and override fonts/sizes
-# to match a clean professional look. Keep all customizations here so a
-# future tweak (e.g., "make the score bigger") happens in one place.
-_BASE = getSampleStyleSheet()
+# ============================================================
+# LOGO — path to fluentiq_black.png, placed next to this file.
+# If the file is missing the page header falls back to a text wordmark
+# so the report still generates cleanly.
+# ============================================================
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "fluentiq_black.png")
+LOGO_WIDTH_MM = 32     # rendered width on the page
+LOGO_HEIGHT_MM = 6.84  # 32 / 4.677 — preserves aspect ratio of 290x62 source
 
-STYLES = {
-    "title": ParagraphStyle(
-        "title",
-        parent=_BASE["Title"],
-        fontSize=20,
-        spaceAfter=4,
-        textColor=colors.HexColor("#0b2545"),
-        alignment=TA_LEFT,
-    ),
-    "subtitle": ParagraphStyle(
-        "subtitle",
-        parent=_BASE["Normal"],
-        fontSize=10,
-        textColor=colors.HexColor("#5a6478"),
-        spaceAfter=12,
-    ),
-    "section": ParagraphStyle(
-        "section",
-        parent=_BASE["Heading2"],
-        fontSize=13,
-        spaceBefore=12,
-        spaceAfter=6,
-        textColor=colors.HexColor("#0b2545"),
-    ),
-    "label": ParagraphStyle(
-        "label",
-        parent=_BASE["Normal"],
-        fontSize=9,
-        textColor=colors.HexColor("#5a6478"),
-    ),
-    "value": ParagraphStyle(
-        "value",
-        parent=_BASE["Normal"],
-        fontSize=10,
-        textColor=colors.HexColor("#1a1a1a"),
-    ),
-    "score_big": ParagraphStyle(
-        "score_big",
-        parent=_BASE["Normal"],
-        fontSize=28,
-        textColor=colors.HexColor("#0b2545"),
-        leading=32,
-    ),
-    "rating_recommended": ParagraphStyle(
-        "rating_recommended",
-        parent=_BASE["Normal"],
-        fontSize=12,
-        textColor=colors.HexColor("#1f7a3a"),
-    ),
-    "rating_borderline": ParagraphStyle(
-        "rating_borderline",
-        parent=_BASE["Normal"],
-        fontSize=12,
-        textColor=colors.HexColor("#a86a00"),
-    ),
-    "rating_not": ParagraphStyle(
-        "rating_not",
-        parent=_BASE["Normal"],
-        fontSize=12,
-        textColor=colors.HexColor("#a02828"),
-    ),
-    "transcript": ParagraphStyle(
-        "transcript",
-        parent=_BASE["Normal"],
-        fontSize=9.5,
-        leading=13,
-        textColor=colors.HexColor("#1a1a1a"),
-        alignment=TA_JUSTIFY,
-        spaceAfter=6,
-    ),
-    "essay": ParagraphStyle(
-        "essay",
-        parent=_BASE["Normal"],
-        fontSize=10,
-        leading=14,
-        textColor=colors.HexColor("#1a1a1a"),
-        alignment=TA_JUSTIFY,
-        spaceAfter=6,
-    ),
-    "feedback": ParagraphStyle(
-        "feedback",
-        parent=_BASE["Normal"],
-        fontSize=10,
-        leading=14,
-        textColor=colors.HexColor("#1a1a1a"),
-        alignment=TA_JUSTIFY,
-        backColor=colors.HexColor("#f5f7fa"),
-        borderPadding=(8, 8, 8, 8),
-        spaceAfter=6,
-    ),
-    "warn": ParagraphStyle(
-        "warn",
-        parent=_BASE["Normal"],
-        fontSize=9.5,
-        textColor=colors.HexColor("#a02828"),
-    ),
-}
+# ============================================================
+# PALETTE — navy / white / light gray. No orange, no decorative colors.
+# Status colors are ONLY used on the rating word — nowhere else.
+# ============================================================
+NAVY        = colors.HexColor("#0b2545")        # primary
+NAVY_LIGHT  = colors.HexColor("#1d3a6e")        # softer navy for subheads
+INK         = colors.HexColor("#1a1a1a")        # primary text
+INK_SOFT    = colors.HexColor("#3a3a3a")        # secondary text
+MUTED       = colors.HexColor("#6a7280")        # labels
+LIGHT_GRAY  = colors.HexColor("#f5f7fa")        # row fills, banner background
+RULE        = colors.HexColor("#d0d7e2")        # table borders, dividers
+WHITE       = colors.white
+
+# Status colors — used ONLY for the rating verdict word.
+RATING_GREEN = colors.HexColor("#1f7a3a")
+RATING_AMBER = colors.HexColor("#a86a00")
+RATING_RED   = colors.HexColor("#a02828")
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-def _fmt_score(value: Optional[int]) -> str:
-    """Render a 0-100 score, or em-dash if missing."""
+# ============================================================
+# Rating bands — mirror scoring.derive_rating()
+# ============================================================
+RATING_BANDS = [
+    ("Recommended",     70, 100),
+    ("Borderline",      50, 69),
+    ("Not recommended",  0, 49),
+]
+
+
+# ============================================================
+# Writing/Speaking dimension definitions
+# ============================================================
+WRITING_DIMS = [
+    ("grammar",                    "Grammar",                    20),
+    ("vocabulary",                 "Vocabulary",                 20),
+    ("comprehension",              "Comprehension",              20),
+    ("writing_quality",            "Writing quality",            20),
+    ("professional_communication", "Professional communication", 20),
+]
+
+SPEAKING_DIMS = [
+    ("pronunciation", "Pronunciation"),
+    ("fluency", "Fluency"),
+    ("grammar", "Grammar"),
+    ("vocabulary", "Vocabulary"),
+    ("confidence", "Confidence"),
+]
+
+
+# ============================================================
+# Formatters
+# ============================================================
+def fmt_score(value: Optional[int]) -> str:
     return f"{value}" if value is not None else "—"
 
 
-def _fmt_dt(
-    dt: Optional[datetime],
-    target_tz_name: Optional[str] = None,
-    tz_label: Optional[str] = None,
-) -> str:
-    """
-    Render a stored UTC timestamp in the candidate's local timezone.
-
-    Args:
-        dt: the datetime stored in the DB. Naive in our schema (see models.py
-            comment about SQLite/Postgres tz round-trip), but treated as UTC.
-        target_tz_name: an IANA zone name like "Asia/Kolkata". When set, the
-            timestamp is converted to that zone before formatting. When None
-            or "UTC", the timestamp is rendered as UTC.
-        tz_label: a short suffix like "IST" or "ET" to append to the formatted
-            string. Comes from supported_timezones.short_label. When None,
-            falls back to the IANA name or "UTC".
-
-    Failure modes (all safe — never raises):
-      - dt is None              → returns "—"
-      - target_tz_name is bad   → falls back to UTC display with "(UTC)" label
-      - tzdata not installed    → same as above (Windows without `pip install tzdata`)
-
-    Returns strings like:
-      "2026-05-06 16:35 (IST)"   ← normal case, candidate's zone
-      "2026-05-06 10:35 (UTC)"   ← fallback when zone is unknown
-      "—"                         ← when dt is None
-    """
+def fmt_dt(dt, target_tz_name=None, tz_label=None) -> str:
     if dt is None:
         return "—"
-
-    # Treat naive datetimes as UTC. Python 3.12+ deprecates the implicit
-    # assumption, so be explicit.
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-
-    # Default render = UTC if no target zone given
     if not target_tz_name or target_tz_name == "UTC":
         return dt.strftime("%Y-%m-%d %H:%M") + " (UTC)"
-
-    # Convert to candidate's zone. On failure, fall back to UTC so the time
-    # AND the label match — better than rendering a non-UTC time with a UTC
-    # label, which would silently mislead.
     try:
         target = ZoneInfo(target_tz_name)
         local = dt.astimezone(target)
@@ -218,505 +120,750 @@ def _fmt_dt(
         return dt.strftime("%Y-%m-%d %H:%M") + " (UTC)"
 
 
-def _fmt_duration(seconds: Optional[int]) -> str:
-    """Render seconds as 'Xm Ys'. Em-dash if None or 0."""
-    if not seconds:
+def fmt_date(dt, target_tz_name=None) -> str:
+    if dt is None:
         return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if target_tz_name and target_tz_name != "UTC":
+        try:
+            dt = dt.astimezone(ZoneInfo(target_tz_name))
+        except ZoneInfoNotFoundError:
+            pass
+    return dt.strftime("%d %B %Y")
+
+
+def fmt_duration(seconds: Optional[int]) -> str:
+    if seconds is None:
+        return "—"
+    if seconds == 0:
+        return "0s"
     m = seconds // 60
     s = seconds % 60
     if m == 0:
         return f"{s}s"
+    if s == 0:
+        return f"{m} minute{'s' if m != 1 else ''}"
     return f"{m}m {s}s"
 
 
-def _rating_style(rating: Optional[str]) -> ParagraphStyle:
-    """Pick the colored Paragraph style based on the rating value."""
-    if rating == "recommended":
-        return STYLES["rating_recommended"]
-    if rating == "borderline":
-        return STYLES["rating_borderline"]
-    return STYLES["rating_not"]  # default for not_recommended and unknown
+def reference_id(inv) -> str:
+    token_part = (inv.token or "")[:6].upper() or "------"
+    return f"EPT-{inv.id:05d}-{token_part}"
 
 
-def _rating_label(rating: Optional[str]) -> str:
-    """Convert internal rating string to a human-readable label."""
-    if rating == "recommended":
-        return "RECOMMENDED"
-    if rating == "borderline":
-        return "BORDERLINE"
-    if rating == "not_recommended":
-        return "NOT RECOMMENDED"
-    return "NOT YET SCORED"
-
-
-def _safe_para(text: Optional[str], style_key: str) -> Paragraph:
-    """
-    Wrap user-generated text (transcripts, essays, feedback) in a Paragraph
-    with HTML-escaping. ReportLab's Paragraph treats <, >, & as markup, so
-    a candidate writing "x < y" would crash the renderer without escaping.
-
-    None and empty strings render as a placeholder ("[no text]") so the
-    section doesn't silently disappear.
-    """
-    if not text or not text.strip():
-        return Paragraph("<i>[no text recorded]</i>", STYLES[style_key])
-    # Escape HTML special chars; preserve newlines as <br/> for readability.
-    escaped = (
-        text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br/>")
-    )
-    return Paragraph(escaped, STYLES[style_key])
-
-
-# ------------------------------------------------------------------
-# Section builders — each returns a list of flowables
-# ------------------------------------------------------------------
-def _build_header(
-    inv: Invitation,
-    score: Optional[Score],
-    target_tz_name: Optional[str],
-    tz_label: Optional[str],
-) -> list:
-    """
-    Top-of-page block: candidate name + email + level + date + total + rating.
-
-    target_tz_name + tz_label control how 'Test taken' is rendered. These
-    flow from build_candidate_pdf — see the docstring there for resolution
-    rules. The other dates in the report (footer's "Generated at") stay in
-    UTC because the audience for the footer is internal/auditing, not the
-    candidate's local context.
-
-    This is the first thing a hiring manager sees when they open the PDF, so
-    it has to convey the headline answer ("recommended? yes/no/maybe") without
-    requiring them to read further.
-    """
-    out: list = []
-
-    # Candidate name + branding/title row
-    out.append(Paragraph("FluentiQ — Assessment Report", STYLES["title"]))
-    out.append(Paragraph(f"Candidate: {inv.candidate_name}", STYLES["subtitle"]))
-
-    # Two-column meta table: labels on left, values on right.
-    # Using a Table because Paragraphs alone can't easily produce side-by-side
-    # label/value pairs aligned across rows.
-    meta_data = [
-        [Paragraph("Email", STYLES["label"]),
-         Paragraph(inv.candidate_email or "—", STYLES["value"])],
-        [Paragraph("Level", STYLES["label"]),
-         Paragraph((inv.difficulty or "—").title(), STYLES["value"])],
-        [Paragraph("Test taken", STYLES["label"]),
-         Paragraph(_fmt_dt(inv.submitted_at, target_tz_name, tz_label),
-                   STYLES["value"])],
-        [Paragraph("Invitation ID", STYLES["label"]),
-         Paragraph(str(inv.id), STYLES["value"])],
-    ]
-    meta_table = Table(meta_data, colWidths=[35 * mm, 130 * mm])
-    meta_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    out.append(meta_table)
-    out.append(Spacer(1, 8 * mm))
-
-    # Big total score + rating banner (or "Not yet scored" if score is None)
-    if score is None:
-        out.append(Paragraph(
-            "<b>Status:</b> Test in progress or not yet scored.",
-            STYLES["value"],
-        ))
-    else:
-        # Two-column block: total score on left, rating on right
-        rating_para = Paragraph(
-            f"<b>{_rating_label(score.rating)}</b>",
-            _rating_style(score.rating),
-        )
-        score_block = [[
-            Paragraph(f"<b>{_fmt_score(score.total_score)}</b>", STYLES["score_big"]),
-            Paragraph("OVERALL SCORE", STYLES["label"]),
-            rating_para,
-        ]]
-        score_table = Table(
-            score_block,
-            colWidths=[35 * mm, 60 * mm, 70 * mm],
-        )
-        score_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("ALIGN", (2, 0), (2, 0), "RIGHT"),
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f7fa")),
-            ("LEFTPADDING", (0, 0), (-1, -1), 12),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-            ("TOPPADDING", (0, 0), (-1, -1), 10),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ]))
-        out.append(score_table)
-
-    out.append(Spacer(1, 6 * mm))
-    return out
-
-
-def _build_section_summary(inv: Invitation, score: Optional[Score]) -> list:
-    """
-    Per-section summary table: Reading / Writing / Speaking with each section's
-    score and inclusion status. Sections excluded from the test show "Not
-    included" instead of 0, so HR can tell the difference between "candidate
-    failed reading" vs "this test didn't include reading".
-    """
-    out = []
-    out.append(Paragraph("Section Summary", STYLES["section"]))
-
-    rows = [
-        ["Section", "Score", "Status"],
-    ]
-
-    def _section_row(name: str, included: bool, score_val: Optional[int]) -> list:
-        if not included:
-            return [name, "—", "Not included"]
-        if score_val is None:
-            return [name, "—", "Not yet scored"]
-        return [name, f"{score_val} / 100", "Scored"]
-
-    s = score
-    rows.append(_section_row(
-        "Reading",
-        inv.include_reading,
-        s.reading_score if s else None,
-    ))
-    rows.append(_section_row(
-        "Writing",
-        inv.include_writing,
-        s.writing_score if s else None,
-    ))
-    rows.append(_section_row(
-        "Speaking",
-        inv.include_speaking,
-        s.speaking_score if s else None,
-    ))
-
-    table = Table(rows, colWidths=[60 * mm, 40 * mm, 65 * mm])
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0b2545")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("ALIGN", (1, 0), (1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f7fa")]),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d0d7e2")),
-    ]))
-    out.append(table)
-    out.append(Spacer(1, 4 * mm))
-    return out
-
-
-def _build_reading_section(inv: Invitation, score: Optional[Score]) -> list:
-    """Reading details: # correct out of # total."""
-    if not inv.include_reading:
-        return []
-    out = [Paragraph("Reading", STYLES["section"])]
-    if not score or score.reading_score is None:
-        out.append(Paragraph("Reading section not yet scored.", STYLES["value"]))
-        return out
-
-    rows = [
-        ["Score", f"{score.reading_score} / 100"],
-        ["Correct answers",
-         f"{score.reading_correct or 0} of {score.reading_total or 0}"],
-    ]
-    table = Table(rows, colWidths=[50 * mm, 115 * mm])
-    table.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#5a6478")),
-    ]))
-    out.append(table)
-    out.append(Spacer(1, 3 * mm))
-    return out
-
-
-def _build_writing_section(
-    inv: Invitation,
-    score: Optional[Score],
-    wr: Optional[WritingResponse],
-    writing_prompt: Optional[str],
-) -> list:
-    """Writing section: prompt + essay + score breakdown + AI feedback."""
-    if not inv.include_writing:
-        return []
-    out = [Paragraph("Writing", STYLES["section"])]
-
-    if not wr:
-        out.append(Paragraph("No essay submitted.", STYLES["warn"]))
-        return out
-
-    # Score breakdown (if scored). writing_breakdown is a JSON dict per scoring.py.
-    breakdown_rows = [
-        ["Score", _fmt_score(score.writing_score) if score else "—"],
-        ["Word count", str(wr.word_count) if wr.word_count is not None else "—"],
-    ]
-    if score and score.writing_breakdown:
-        wb = score.writing_breakdown
-        if isinstance(wb, dict):
-            for key in ("task_response", "grammar", "vocabulary", "coherence"):
-                if key in wb:
-                    breakdown_rows.append([
-                        key.replace("_", " ").title(),
-                        f"{wb[key]} / 25",
-                    ])
-    breakdown_table = Table(breakdown_rows, colWidths=[50 * mm, 115 * mm])
-    breakdown_table.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#5a6478")),
-    ]))
-    out.append(breakdown_table)
-    out.append(Spacer(1, 3 * mm))
-
-    # Prompt
-    out.append(Paragraph("<b>Prompt</b>", STYLES["label"]))
-    out.append(_safe_para(writing_prompt or "(prompt unavailable)", "value"))
-    out.append(Spacer(1, 3 * mm))
-
-    # Essay
-    out.append(Paragraph("<b>Candidate's Essay</b>", STYLES["label"]))
-    out.append(_safe_para(wr.essay_text, "essay"))
-    out.append(Spacer(1, 3 * mm))
-
-    return out
-
-
-def _build_speaking_section(
-    inv: Invitation,
-    score: Optional[Score],
-    audio_recordings: list,
-    topic_prompts: dict,
-) -> list:
-    """Speaking section: breakdown of 5 dimensions + per-question transcripts."""
-    if not inv.include_speaking:
-        return []
-    out = [Paragraph("Speaking", STYLES["section"])]
-
-    # Dimension breakdown (if scored)
-    breakdown_rows = [
-        ["Score", _fmt_score(score.speaking_score) if score else "—"],
-    ]
-    if score and score.speaking_breakdown:
-        sb = score.speaking_breakdown
-        if isinstance(sb, dict):
-            for key in ("pronunciation", "fluency", "grammar", "vocabulary", "confidence"):
-                if key in sb:
-                    val = sb[key]
-                    breakdown_rows.append([
-                        key.title(),
-                        f"{val} / 100" if val is not None else "—",
-                    ])
-    breakdown_table = Table(breakdown_rows, colWidths=[50 * mm, 115 * mm])
-    breakdown_table.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#5a6478")),
-    ]))
-    out.append(breakdown_table)
-    out.append(Spacer(1, 3 * mm))
-
-    # Per-question transcripts. Each Q is wrapped in KeepTogether so the
-    # prompt + transcript don't get split across a page break (ugly).
-    if audio_recordings:
-        for idx, rec in enumerate(audio_recordings, start=1):
-            prompt = topic_prompts.get(rec.topic_id, "(prompt unavailable)")
-            block = [
-                Paragraph(f"<b>Question {idx}</b>", STYLES["label"]),
-                _safe_para(prompt, "value"),
-                Spacer(1, 1.5 * mm),
-                Paragraph(
-                    f"<b>Transcript</b> "
-                    f"<font color='#5a6478'>"
-                    f"({_fmt_duration(rec.duration_seconds)})"
-                    f"</font>",
-                    STYLES["label"],
-                ),
-                _safe_para(rec.transcript, "transcript"),
-                Spacer(1, 3 * mm),
-            ]
-            out.append(KeepTogether(block))
-    else:
-        out.append(Paragraph("No audio recordings submitted.", STYLES["warn"]))
-
-    return out
-
-
-def _build_feedback_section(score: Optional[Score]) -> list:
-    """AI feedback paragraph (writing + speaking combined)."""
-    if not score or not score.ai_feedback:
-        return []
-    out = [Paragraph("AI Assessor Feedback", STYLES["section"])]
-    out.append(_safe_para(score.ai_feedback, "feedback"))
-    out.append(Spacer(1, 3 * mm))
-    return out
-
-
-def _build_integrity_section(inv: Invitation) -> list:
-    """
-    Test integrity / anti-cheating signals. HR uses this to decide whether
-    to trust the score or follow up with a manual interview.
-    """
-    out = [Paragraph("Test Integrity", STYLES["section"])]
-
-    # "Terminated" is derived from submission_reason rather than a stored
-    # boolean column. The taxonomy is documented in models.py: any of
-    # tab_switch_termination, reading_timer_expired, writing_timer_expired,
-    # speaking_timer_expired means the test was forcibly ended; everything
-    # else (candidate_finished, None for in-progress) is "normal".
-    terminated = inv.submission_reason and inv.submission_reason not in (
-        "candidate_finished", "candidate_submit",
-    )
-
-    rows = [
-        ["Tab switches", str(inv.tab_switches_count or 0)],
-        ["Total time off-tab", _fmt_duration(inv.tab_switches_total_seconds or 0)],
-        ["Submission status", _format_submission_reason(inv.submission_reason)],
-        ["Terminated", "Yes" if terminated else "No"],
-    ]
-
-    if inv.started_at and inv.submitted_at:
-        elapsed = int((inv.submitted_at - inv.started_at).total_seconds())
-        rows.append(["Total test time", _fmt_duration(elapsed)])
-
-    # Total seconds allowed = sum of per-section seconds. Each section's
-    # cap is stored separately on the invitation so HR can include only
-    # the sections that were actually part of the test.
-    seconds_allowed = 0
-    if inv.include_reading:
-        seconds_allowed += inv.reading_seconds or 0
-    if inv.include_writing:
-        seconds_allowed += inv.writing_seconds or 0
-    if inv.include_speaking:
-        seconds_allowed += inv.speaking_seconds or 0
-    if seconds_allowed > 0:
-        rows.append(["Time allowed", _fmt_duration(seconds_allowed)])
-
-    table = Table(rows, colWidths=[50 * mm, 115 * mm])
-    table.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#5a6478")),
-    ]))
-    out.append(table)
-
-    # If terminated, show a warning highlighting the reason
-    if terminated:
-        out.append(Spacer(1, 2 * mm))
-        out.append(Paragraph(
-            "<b>Note:</b> This test was auto-terminated. "
-            "Scores reflect only the work the candidate completed before termination.",
-            STYLES["warn"],
-        ))
-
-    out.append(Spacer(1, 3 * mm))
-    return out
-
-
-def _format_submission_reason(reason: Optional[str]) -> str:
-    """Map internal submission_reason strings to human-readable labels."""
+def format_submission_reason(reason: Optional[str]) -> str:
     if not reason:
         return "—"
     mapping = {
         "candidate_finished": "Completed normally",
+        "candidate_submit": "Completed normally",
         "tab_switch_termination": "Terminated (tab-switch limit)",
         "tab_switch_limit": "Terminated (tab-switch limit)",
-        "speaking_timer_expired": "Auto-submitted (time expired)",
+        "reading_timer_expired": "Auto-submitted (reading time expired)",
+        "writing_timer_expired": "Auto-submitted (writing time expired)",
+        "speaking_timer_expired": "Auto-submitted (speaking time expired)",
         "window_expired": "Auto-submitted (window expired)",
     }
     return mapping.get(reason, reason.replace("_", " ").title())
 
 
+def rating_label(rating: Optional[str]) -> str:
+    return {
+        "recommended": "RECOMMENDED",
+        "borderline": "BORDERLINE",
+        "not_recommended": "NOT RECOMMENDED",
+    }.get(rating, "NOT YET SCORED")
 
 
-# ------------------------------------------------------------------
-# Main entry point
-# ------------------------------------------------------------------
+def rating_color(rating):
+    if rating == "recommended":
+        return RATING_GREEN
+    if rating == "borderline":
+        return RATING_AMBER
+    if rating == "not_recommended":
+        return RATING_RED
+    return MUTED
+
+
+def cefr_label(total_score: Optional[int]) -> str:
+    if total_score is None:
+        return "—"
+    if total_score >= 90:
+        return "C2"
+    if total_score >= 75:
+        return "C1"
+    if total_score >= 60:
+        return "B2"
+    if total_score >= 40:
+        return "B1"
+    if total_score >= 20:
+        return "A2"
+    return "A1"
+
+
+def cefr_full(total_score: Optional[int]) -> str:
+    """CEFR with descriptive name — for headings."""
+    code = cefr_label(total_score)
+    names = {
+        "C2": "C2 — Proficient",
+        "C1": "C1 — Advanced",
+        "B2": "B2 — Upper Intermediate",
+        "B1": "B1 — Intermediate",
+        "A2": "A2 — Elementary",
+        "A1": "A1 — Beginner",
+        "—": "—",
+    }
+    return names.get(code, code)
+
+
+def writing_was_skipped(score) -> bool:
+    if not score or not score.writing_breakdown:
+        return False
+    wb = score.writing_breakdown
+    if not isinstance(wb, dict):
+        return False
+    dims = ("grammar", "vocabulary", "comprehension",
+            "writing_quality", "professional_communication")
+    return all(wb.get(k) is None for k in dims)
+
+
+def speaking_was_skipped(score) -> bool:
+    if not score or not score.speaking_breakdown:
+        return False
+    sb = score.speaking_breakdown
+    if not isinstance(sb, dict):
+        return False
+    dims = ("pronunciation", "fluency", "grammar", "vocabulary", "confidence")
+    return all(sb.get(k) is None for k in dims)
+
+
+def all_speaking_off_topic(score, num_q: int) -> bool:
+    if not score or not score.ai_feedback or num_q == 0:
+        return False
+    fb = score.ai_feedback
+    flagged = sum(1 for i in range(1, num_q + 1) if f"Q{i}" in fb)
+    return flagged == num_q and "off-topic" in fb.lower()
+
+
+def extract_skip_reason(ai_feedback: Optional[str]) -> str:
+    if not ai_feedback:
+        return "No reason recorded."
+    text = ai_feedback.strip()
+    if text.lower().startswith("skipped grading"):
+        end_period = text.find(".")
+        end_para = text.find("\n")
+        candidates = [p for p in (end_period, end_para) if p > 0]
+        if candidates:
+            return text[: min(candidates) + 1]
+        return text
+    return "See AI Assessor Feedback below for details."
+
+
+def clean_ai_feedback(ai_feedback: Optional[str]) -> str:
+    """Strip internal technical noise from AI feedback so HR sees only
+    meaningful content.
+
+    The speaking grading service (services/speaking_eval.py) logs technical
+    failures into score.ai_feedback using database row IDs like
+    "Question 53: no usable speech detected ...". HR readers see "Question
+    53" and think it's question position 53 — but it's actually the
+    audio_recordings.id, an internal DB key. Until the upstream service is
+    fixed to emit position-based numbering (Question 1/2/3), this function
+    strips those technical phrases from the PDF.
+
+    Patterns stripped:
+      - "Question N: <any reason text up to next ; or end of string>"
+      - "Pronunciation assessment failed for question N"
+      - "No usable transcripts for grammar/vocabulary grading"
+      - "Notes:" prefix when followed by nothing meaningful
+      - Stray leading/trailing semicolons, dangling separators
+
+    If after stripping nothing meaningful remains, returns "" — the caller
+    is responsible for hiding the section entirely when this happens.
+    """
+    if not ai_feedback:
+        return ""
+    text = ai_feedback
+
+    # Strip technical "Question N: ..." failure messages (with DB IDs)
+    text = re.sub(
+        r"Question\s+\d+\s*:\s*[^;]*?(?:;|$)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Strip the older "Pronunciation assessment failed for question N" pattern
+    text = re.sub(
+        r"Pronunciation assessment failed for question \d+\s*;?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Strip the bulk "No usable transcripts ..." statement
+    text = re.sub(
+        r"No usable transcripts for grammar/vocabulary grading\s*\.?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # If "Notes:" is now followed by only whitespace and semicolons, drop it
+    text = re.sub(r"Notes:\s*(?:;\s*)*$", "", text, flags=re.IGNORECASE)
+    # Normalize "prompt" → "question" so feedback uses the same vocabulary
+    # as the rest of the report (section labels, UI, etc.). The GPT-4o
+    # writing grader sometimes echoes the word "prompt" from its system
+    # message; this rewrites those occurrences to "question" so HR readers
+    # see consistent terminology. Preserves capitalization: Prompt → Question,
+    # prompt → question, PROMPT → QUESTION.
+    text = re.sub(r"\bPrompt\b", "Question", text)
+    text = re.sub(r"\bprompt\b", "question", text)
+    text = re.sub(r"\bPROMPT\b", "QUESTION", text)
+    # Same for "prompts" plural
+    text = re.sub(r"\bPrompts\b", "Questions", text)
+    text = re.sub(r"\bprompts\b", "questions", text)
+    text = re.sub(r"\bPROMPTS\b", "QUESTIONS", text)
+    # Collapse stray dangling separators left at the start
+    text = re.sub(r"^\s*[;:.\s]+", "", text)
+    # Collapse stray dangling separators left at the end
+    text = re.sub(r"[;:\s]+$", "", text)
+    # Collapse repeated whitespace
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def safe_para_text(text):
+    """Return HTML-escaped text safe for ReportLab Paragraph."""
+    if not text or not text.strip():
+        return "<i>[no text recorded]</i>"
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\n", "<br/>")
+    )
+
+
+_BASE = getSampleStyleSheet()
+
+
+def _styles():
+    return {
+        "doc_title": ParagraphStyle(
+            "doc_title", parent=_BASE["Title"],
+            fontName="Helvetica-Bold", fontSize=20, leading=24,
+            textColor=NAVY, alignment=TA_CENTER, spaceAfter=12,
+        ),
+        "doc_subtitle": ParagraphStyle(
+            "doc_subtitle", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10, leading=13,
+            textColor=INK_SOFT, alignment=TA_LEFT, spaceAfter=12,
+        ),
+        "section_bar_title": ParagraphStyle(
+            "section_bar_title", parent=_BASE["Heading2"],
+            fontName="Helvetica-Bold", fontSize=12, leading=15,
+            textColor=WHITE, alignment=TA_LEFT,
+        ),
+        "subsection_h": ParagraphStyle(
+            "subsection_h", parent=_BASE["Heading3"],
+            fontName="Helvetica-Bold", fontSize=10.5, leading=13,
+            textColor=NAVY, spaceBefore=6, spaceAfter=4,
+        ),
+        "label": ParagraphStyle(
+            "label", parent=_BASE["Normal"],
+            fontName="Helvetica-Bold", fontSize=7.5, leading=10,
+            textColor=MUTED,
+        ),
+        "value": ParagraphStyle(
+            "value", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10.5, leading=14,
+            textColor=INK,
+        ),
+        "body": ParagraphStyle(
+            "body", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10.5, leading=15,
+            textColor=INK, alignment=TA_JUSTIFY,
+        ),
+        "lede": ParagraphStyle(
+            "lede", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=11.5, leading=16,
+            textColor=INK, alignment=TA_LEFT, spaceAfter=10,
+        ),
+        "essay": ParagraphStyle(
+            "essay", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10.5, leading=15,
+            textColor=INK, alignment=TA_JUSTIFY, spaceAfter=6,
+        ),
+        "transcript": ParagraphStyle(
+            "transcript", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10, leading=14,
+            textColor=INK, alignment=TA_JUSTIFY, spaceAfter=6,
+        ),
+        "question_text": ParagraphStyle(
+            "question_text", parent=_BASE["Normal"],
+            fontName="Helvetica-Bold", fontSize=10.5, leading=14,
+            textColor=INK, alignment=TA_LEFT, spaceAfter=4,
+        ),
+        "feedback_box": ParagraphStyle(
+            "feedback_box", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10.5, leading=15,
+            textColor=INK, alignment=TA_JUSTIFY,
+            backColor=LIGHT_GRAY,
+            borderPadding=(10, 12, 10, 12),
+        ),
+        "callout_warn": ParagraphStyle(
+            "callout_warn", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10, leading=14,
+            textColor=colors.HexColor("#a02828"),
+            backColor=colors.HexColor("#fcecec"),
+            borderPadding=(8, 12, 8, 12),
+        ),
+        "callout_info": ParagraphStyle(
+            "callout_info", parent=_BASE["Normal"],
+            fontName="Helvetica", fontSize=10, leading=14,
+            textColor=colors.HexColor("#a86a00"),
+            backColor=colors.HexColor("#fbf6ec"),
+            borderPadding=(8, 12, 8, 12),
+        ),
+    }
+
+
+def _safe_para(text, style):
+    return Paragraph(safe_para_text(text), style)
+
+
+def _section_bar(title, S):
+    """Build the navy 'section bar' heading element.
+
+    Returns a list of [bar, spacer]. The caller is responsible for keeping
+    the bar visually attached to its first content — see _section_open()
+    below for the orphan-safe version.
+    """
+    bar = Table([[Paragraph(title, S["section_bar_title"])]],
+                colWidths=[174 * mm])
+    bar.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    return [bar, Spacer(1, 4 * mm)]
+
+
+def _section_open(title, S, first_content):
+    """Start a section with its heading bar AND first content block kept
+    together so the heading never gets orphaned at the bottom of a page.
+
+    'first_content' is whatever comes right after the bar — typically a
+    Table or Paragraph. ReportLab treats the whole group as one unit; if
+    it can't fit on the current page, the entire group breaks to the next
+    page together.
+
+    Use this instead of `_section_bar(...) + first_content` to prevent
+    section headings from being separated from their content.
+    """
+    bar, spacer = _section_bar(title, S)
+    # Wrap [bar, spacer, first_content] so they always travel as one unit.
+    if isinstance(first_content, list):
+        items = [bar, spacer] + first_content
+    else:
+        items = [bar, spacer, first_content]
+    return [KeepTogether(items)]
+
+
+def _cover(inv, score, tz_name, tz_label, S):
+    """Consulting-style opening: title and meta grid."""
+    out = []
+    out.append(Paragraph("Assessment Report", S["doc_title"]))
+
+    # Meta grid
+    rows = [
+        [Paragraph("CANDIDATE", S["label"]),
+         Paragraph(inv.candidate_name or "—", S["value"]),
+         Paragraph("REFERENCE", S["label"]),
+         Paragraph(reference_id(inv), S["value"])],
+        [Paragraph("EMAIL", S["label"]),
+         Paragraph(inv.candidate_email or "—", S["value"]),
+         Paragraph("TEST LEVEL", S["label"]),
+         Paragraph((inv.difficulty or "—").title(), S["value"])],
+        [Paragraph("SUBMITTED", S["label"]),
+         Paragraph(fmt_dt(inv.submitted_at, tz_name, tz_label), S["value"]),
+         Paragraph("REPORT DATE", S["label"]),
+         Paragraph(datetime.now(timezone.utc).strftime("%d %B %Y"),
+                   S["value"])],
+    ]
+    grid = Table(rows, colWidths=[28 * mm, 60 * mm, 28 * mm, 58 * mm])
+    grid.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.3, RULE),
+    ]))
+    out.append(grid)
+    out.append(Spacer(1, 6 * mm))
+    return out
+
+
+def _summary(inv, score, S):
+    if not score:
+        return _section_open("Section Summary", S,
+                             Paragraph("Test not yet scored.", S["body"]))
+
+    def row(name, included, val):
+        if not included:
+            return [name, "—", "Not part of this test"]
+        if val is None:
+            return [name, "—", "Not yet scored"]
+        return [name, f"{val} / 100", "Completed"]
+
+    rows = [["Section", "Score", "Outcome"]]
+    rows.append(row("Reading", inv.include_reading, score.reading_score))
+    rows.append(row("Writing", inv.include_writing, score.writing_score))
+    rows.append(row("Speaking", inv.include_speaking, score.speaking_score))
+    rows.append(["", "", ""])
+    rows.append(["OVERALL",
+                 f"{fmt_score(score.total_score)} / 100",
+                 rating_label(score.rating)])
+
+    table = Table(rows, colWidths=[60 * mm, 35 * mm, 79 * mm])
+    rating_col = rating_color(score.rating)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, -3), 0.3, RULE),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -1), (-1, -1), LIGHT_GRAY),
+        ("TEXTCOLOR", (2, -1), (2, -1), rating_col),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+    ]))
+    # Open the section with [bar + table] glued together so the heading
+    # never gets stranded at the bottom of a page without the table.
+    out = _section_open("Section Summary", S, table)
+    out.append(Spacer(1, 3 * mm))
+    bands_text = " · ".join(f"{name} {lo}–{hi}"
+                            for name, lo, hi in RATING_BANDS)
+    out.append(Paragraph(
+        f"<i>Rating bands: {bands_text}</i>",
+        ParagraphStyle("g", parent=S["body"], fontSize=8.5, textColor=MUTED),
+    ))
+    out.append(Spacer(1, 5 * mm))
+    return out
+
+
+def _reading(inv, score, S):
+    if not inv.include_reading:
+        return []
+    if not score or score.reading_score is None:
+        return _section_open(
+            "Reading", S,
+            Paragraph("Reading section not yet scored.", S["body"]),
+        )
+    correct = score.reading_correct or 0
+    total = score.reading_total or 0
+    pct = round((correct / total) * 100) if total > 0 else 0
+    body = Paragraph(
+        f"The candidate answered <b>{correct} of {total}</b> multiple-choice "
+        f"questions correctly, an accuracy of <b>{pct}%</b>. The reading "
+        f"score on the 0–100 scale is <b>{score.reading_score}</b>.",
+        S["body"],
+    )
+    out = _section_open("Reading", S, body)
+    out.append(Spacer(1, 4 * mm))
+    return out
+
+
+def _writing(inv, score, wr, prompt, S):
+    if not inv.include_writing:
+        return []
+    if not wr:
+        return _section_open(
+            "Writing", S,
+            Paragraph("<i>No essay submitted.</i>", S["body"]),
+        )
+
+    # Breakdown table
+    wb = score.writing_breakdown if score and score.writing_breakdown else None
+    rows = [["Dimension", "Score"]]
+    rows.append(["Word count",
+                 str(wr.word_count) if wr.word_count is not None else "—"])
+    if isinstance(wb, dict):
+        for key, label, denom in WRITING_DIMS:
+            val = wb.get(key)
+            cell = f"{val} / {denom}" if val is not None else "—"
+            rows.append([label, cell])
+    table = Table(rows, colWidths=[100 * mm, 74 * mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GRAY]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.25, RULE),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+    ]))
+    # Section bar + breakdown table travel together.
+    out = _section_open("Writing", S, table)
+    out.append(Spacer(1, 4 * mm))
+
+    # "Question" subsection: heading + prompt text glued together so the
+    # heading doesn't get orphaned at the bottom of a page.
+    out.append(KeepTogether([
+        Paragraph("Question", S["subsection_h"]),
+        _safe_para(prompt or "(question unavailable)", S["body"]),
+    ]))
+    out.append(Spacer(1, 2 * mm))
+
+    if writing_was_skipped(score):
+        skip_reason = extract_skip_reason(score.ai_feedback if score else None)
+        out.append(Paragraph(
+            f"<b>Reviewer's note:</b> AI grading was skipped. {skip_reason} "
+            f"The candidate's submitted answer is shown below as-is for "
+            f"manual review.",
+            S["callout_warn"],
+        ))
+        out.append(Spacer(1, 2 * mm))
+
+    # "Candidate's Answer" subsection: heading + first portion of essay
+    # glued together. The essay itself may wrap to the next page, but the
+    # heading won't get separated from the start of the answer.
+    out.append(KeepTogether([
+        Paragraph("Candidate's Answer", S["subsection_h"]),
+        _safe_para(wr.essay_text, S["essay"]),
+    ]))
+    out.append(Spacer(1, 3 * mm))
+    return out
+
+
+def _speaking(inv, score, recordings, topic_prompts, S):
+    if not inv.include_speaking:
+        return []
+
+    num_q = len(recordings) if recordings else 0
+    all_off = all_speaking_off_topic(score, num_q)
+
+    # Build the breakdown table first (if there is one), so we know what
+    # to glue the section heading to.
+    sb = score.speaking_breakdown if score and score.speaking_breakdown else None
+    breakdown_table = None
+    if isinstance(sb, dict):
+        rows = [["Dimension", "Score"]]
+        for key, label in SPEAKING_DIMS:
+            val = sb.get(key)
+            cell = f"{val} / 100" if val is not None else "—"
+            rows.append([label, cell])
+        breakdown_table = Table(rows, colWidths=[100 * mm, 74 * mm])
+        breakdown_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GRAY]),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.25, RULE),
+            ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+        ]))
+
+    # Section heading travels with whatever its first piece of content is:
+    # the breakdown table if present, otherwise the off-topic note if
+    # present, otherwise the first question block.
+    if breakdown_table is not None:
+        out = _section_open("Speaking", S, breakdown_table)
+        out.append(Spacer(1, 4 * mm))
+    else:
+        # No breakdown — section bar alone, content follows below.
+        out = _section_bar("Speaking", S)
+
+    if all_off and not speaking_was_skipped(score):
+        out.append(Paragraph(
+            "<b>Reviewer's note:</b> All speaking responses were flagged "
+            "off-topic. The candidate spoke at length but did not address "
+            "the questions asked. Per-dimension scores reflect <i>how</i> "
+            "the candidate spoke, not <i>what</i> they said — rely on the "
+            "transcripts below for the hiring decision.",
+            S["callout_info"],
+        ))
+        out.append(Spacer(1, 3 * mm))
+
+    if recordings:
+        # Each question block (heading + prompt + answer-label + transcript)
+        # is wrapped in KeepTogether so the question heading never gets
+        # stranded at the bottom of a page without its transcript.
+        for idx, rec in enumerate(recordings, start=1):
+            prompt = topic_prompts.get(rec.topic_id, "(question unavailable)")
+            duration_str = fmt_duration(rec.duration_seconds)
+            block = [
+                Paragraph(f"Question {idx}", S["subsection_h"]),
+                _safe_para(prompt, S["question_text"]),
+                Paragraph(
+                    f"<b>Candidate's Answer</b> "
+                    f"<font size='8' color='#6a7280'>"
+                    f"(transcript · {duration_str})</font>",
+                    S["label"],
+                ),
+                _safe_para(rec.transcript, S["transcript"]),
+            ]
+            out.append(KeepTogether(block))
+            out.append(Spacer(1, 4 * mm))
+    else:
+        out.append(Paragraph("<i>No audio recordings submitted.</i>",
+                             S["body"]))
+    return out
+
+
+def _feedback(score, S):
+    if not score or not score.ai_feedback:
+        return []
+    cleaned = clean_ai_feedback(score.ai_feedback)
+    if not cleaned:
+        return []
+    # Section bar + feedback box travel together so the heading never gets
+    # stranded above a page break.
+    return _section_open(
+        "Assessor Feedback", S,
+        _safe_para(cleaned, S["feedback_box"]),
+    )
+
+
+def _integrity(inv, S):
+    terminated = inv.submission_reason and inv.submission_reason not in (
+        "candidate_finished", "candidate_submit",
+    )
+    rows = [
+        ["Tab switches", str(inv.tab_switches_count or 0)],
+        ["Total time off-tab",
+         fmt_duration(inv.tab_switches_total_seconds or 0)],
+        ["Submission status",
+         format_submission_reason(inv.submission_reason)],
+        ["Terminated", "Yes" if terminated else "No"],
+    ]
+    if inv.started_at and inv.submitted_at:
+        elapsed = int((inv.submitted_at - inv.started_at).total_seconds())
+        rows.append(["Total test time", fmt_duration(elapsed)])
+    sec_allowed = sum(
+        getattr(inv, attr, 0) or 0
+        for attr, flag in [
+            ("reading_seconds", inv.include_reading),
+            ("writing_seconds", inv.include_writing),
+            ("speaking_seconds", inv.include_speaking),
+        ] if flag
+    )
+    if sec_allowed:
+        rows.append(["Time allowed", fmt_duration(sec_allowed)])
+
+    table = Table(rows, colWidths=[60 * mm, 114 * mm])
+    table.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.25, RULE),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+    ]))
+    # Section bar + integrity table travel together.
+    out = _section_open("Test Integrity", S, table)
+
+    if terminated:
+        out.append(Spacer(1, 3 * mm))
+        out.append(Paragraph(
+            "<b>Reviewer's note:</b> This test was auto-terminated. "
+            "Scores reflect only the work the candidate completed before "
+            "termination.",
+            S["callout_warn"],
+        ))
+    return out
+
+
+def _make_page_decorator(inv, generated_at):
+    ref = reference_id(inv)
+    cand = inv.candidate_name or "(no name)"
+
+    def _on_page(canvas, doc):
+        canvas.saveState()
+        pw = A4[0]
+        ph = A4[1]
+        # Header strip — logo top-left only. Right side intentionally empty.
+        # Logo bottom sits at ph - 14mm (its height is 6.84mm, so the top is
+        # at ph - 7.16mm). Try the image first; fall back to a text wordmark
+        # so the report still generates if the logo file goes missing in prod.
+        try:
+            canvas.drawImage(
+                LOGO_PATH,
+                18 * mm,                     # x: left margin
+                ph - 14 * mm,                # y: bottom edge of logo
+                width=LOGO_WIDTH_MM * mm,
+                height=LOGO_HEIGHT_MM * mm,
+                mask='auto',                 # respect transparency if any
+                preserveAspectRatio=True,
+            )
+        except Exception:
+            canvas.setFont("Helvetica-Bold", 9)
+            canvas.setFillColor(NAVY)
+            canvas.drawString(18 * mm, ph - 12 * mm, "FluentiQ")
+        # Navy rule below the header strip
+        canvas.setStrokeColor(NAVY)
+        canvas.setLineWidth(0.6)
+        canvas.line(18 * mm, ph - 16 * mm, pw - 18 * mm, ph - 16 * mm)
+        # Footer
+        y = 10 * mm
+        canvas.setStrokeColor(RULE)
+        canvas.setLineWidth(0.3)
+        canvas.line(18 * mm, y + 4 * mm, pw - 18 * mm, y + 4 * mm)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.setFillColor(MUTED)
+        canvas.drawRightString(pw - 18 * mm, y, f"Page {doc.page}")
+        canvas.restoreState()
+
+    return _on_page
+
+
 def build_candidate_pdf(
-    inv: Invitation,
-    score: Optional[Score],
-    writing_response: Optional[WritingResponse],
-    writing_prompt: Optional[str],
-    audio_recordings: list,
-    speaking_topic_prompts: dict,
-    candidate_tz_name: Optional[str] = None,
-    candidate_tz_label: Optional[str] = None,
-) -> bytes:
-    """
-    Generate a complete assessment PDF for one candidate.
-
-    Args:
-        inv: the Invitation row
-        score: the Score row, or None if not yet scored
-        writing_response: the WritingResponse row, or None
-        writing_prompt: the assigned writing prompt text, or None
-        audio_recordings: list of AudioRecording rows (already sorted)
-        speaking_topic_prompts: dict mapping topic_id → prompt_text
-        candidate_tz_name: IANA timezone name (e.g. "Asia/Kolkata") for
-            rendering the candidate-facing 'Test taken' timestamp. Comes
-            from inv.display_timezone — the same zone HR picked when
-            sending the invitation. When None or "UTC", the timestamp is
-            shown in UTC.
-        candidate_tz_label: short label like "IST" or "ET" appended to the
-            formatted time. Comes from supported_timezones.short_label.
-
-    Why two timezone params instead of just looking up the row inside this
-    function: keeps this function dependency-free of the DB. The caller
-    (routes/hr_reports.py) already has a Session — it does the lookup once
-    and passes the strings down. This keeps the PDF builder pure and
-    unit-testable without a DB.
-
-    The caller is responsible for fetching all of these upfront so this
-    function makes zero DB queries.
-
-    Returns the PDF as bytes. Caller wraps in StreamingResponse.
-    """
+    inv, score, writing_response, writing_prompt,
+    audio_recordings, speaking_topic_prompts,
+    candidate_tz_name=None, candidate_tz_label=None,
+):
+    S = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=22 * mm, bottomMargin=20 * mm,
         title=f"Assessment Report — {inv.candidate_name}",
         author="FluentiQ",
     )
+    story = []
+    story += _cover(inv, score, candidate_tz_name, candidate_tz_label, S)
+    story += _summary(inv, score, S)
+    story += _reading(inv, score, S)
+    story += _writing(inv, score, writing_response, writing_prompt, S)
+    story += _speaking(inv, score, audio_recordings, speaking_topic_prompts, S)
+    story += _feedback(score, S)
+    story += _integrity(inv, S)
 
-    story: list = []
-    story += _build_header(inv, score, candidate_tz_name, candidate_tz_label)
-    story += _build_section_summary(inv, score)
-    story += _build_reading_section(inv, score)
-    story += _build_writing_section(inv, score, writing_response, writing_prompt)
-    story += _build_speaking_section(inv, score, audio_recordings, speaking_topic_prompts)
-    story += _build_feedback_section(score)
-    story += _build_integrity_section(inv)
-    
-
-    doc.build(story)
-    pdf_bytes = buf.getvalue()
+    page_dec = _make_page_decorator(inv, datetime.now(timezone.utc))
+    doc.build(story, onFirstPage=page_dec, onLaterPages=page_dec)
+    out = buf.getvalue()
     buf.close()
-    return pdf_bytes
+    return out
