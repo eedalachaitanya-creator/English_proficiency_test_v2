@@ -263,3 +263,12 @@ ept_dump_*
 
 # Local SMTP / debug test scripts (not part of the deliverable)
 backend/test_smtp.py
+
+# Local pytest suite for v2 super-admin / audit-log / tenancy work.
+# Per user instruction (2026-05-12): these tests verify endpoints during
+# development but are NOT pushed to the v2 backend GitHub repo. They live
+# in backend/tests/ and stay there.
+backend/tests/
+backend/pytest.ini
+backend/conftest.py
+backend/requirements-dev.txt

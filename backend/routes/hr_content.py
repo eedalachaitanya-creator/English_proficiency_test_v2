@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import (
-    HRAdmin, Passage, Question, SpeakingTopic, WritingTopic, Invitation
+    HRAdmin, Passage, Question, SpeakingTopic, WritingTopic, Invitation,
+    OrganizationContentDisable,
 )
 from auth import require_principal, Principal
 from tenancy import (
@@ -914,3 +915,195 @@ def toggle_speaking_topic_disabled(
     db.commit()
     db.refresh(topic)
     return topic
+
+
+# ============================================================================
+# Per-org disable of global content
+# ============================================================================
+#
+# An organization can hide specific GLOBAL passages/questions/topics from
+# its own candidates without affecting any other org. The override lives
+# in the organization_content_disable table; we look it up at candidate
+# content-load time (routes/candidate.py).
+#
+# WHY this is separate from the existing /toggle-disabled endpoints:
+#   - /toggle-disabled flips Content.disabled_at, which is a GLOBAL flag
+#     ("nobody sees this row"). It's the right tool for org-private rows.
+#   - /disable-for-my-org adds a row in organization_content_disable for
+#     ONE org. It's the right tool for global rows that one org wants
+#     to hide.
+#
+# Auth: HR or admin (not super — super has no org, so "for my org" is
+# meaningless). Strict so a must_change_password user can't toggle.
+# ============================================================================
+
+# URL collection name ('passages', 'questions', etc.) → (SQLAlchemy model,
+# stored content_type label). The URL collection matches the existing
+# CRUD route naming (plural, kebab-case); the stored label is singular
+# snake_case for terse audit/log output.
+_CONTENT_TYPE_MAP: dict[str, tuple[type, str]] = {
+    "passages": (Passage, "passage"),
+    "questions": (Question, "question"),
+    "writing-topics": (WritingTopic, "writing_topic"),
+    "speaking-topics": (SpeakingTopic, "speaking_topic"),
+}
+
+
+def _resolve_content_type(content_type_url: str) -> tuple[type, str]:
+    """Translate the URL segment to (model, content_type label). 422 on unknown."""
+    entry = _CONTENT_TYPE_MAP.get(content_type_url)
+    if entry is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown content type {content_type_url!r}. "
+                f"Expected one of: {sorted(_CONTENT_TYPE_MAP.keys())}."
+            ),
+        )
+    return entry
+
+
+def _require_org_role(p: Principal) -> int:
+    """Per-org-disable is meaningful only for HR/admin (who have an org).
+    Super has no organization, so we 403 super here — they should use
+    /toggle-disabled (global disable) instead."""
+    if p.role == "super" or p.organization_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Per-org disable is for HR/admin only. Super-admin should "
+                "use the global /toggle-disabled endpoint for content-wide changes."
+            ),
+        )
+    return p.organization_id
+
+
+@router.post("/{content_type_url}/{content_id}/disable-for-my-org", status_code=200)
+def disable_content_for_my_org(
+    content_type_url: str,
+    content_id: int,
+    db: Session = Depends(get_db),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
+):
+    """
+    Hide a GLOBAL content row from the caller's org's candidates.
+
+    Returns 200 if the row is now disabled-for-this-org (idempotent —
+    calling twice is fine, same result).
+
+    422 if:
+      - content_type isn't one of the four supported types
+      - the row is org-private (use /toggle-disabled instead)
+    404 if the row doesn't exist OR isn't visible to the caller
+        (cross-tenant — same generic message either way).
+    """
+    org_id = _require_org_role(p)
+    model, content_type_label = _resolve_content_type(content_type_url)
+
+    row = db.query(model).filter(
+        model.id == content_id,
+        model.deleted_at.is_(None),
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="content not found")
+
+    # Tenancy: caller must be able to see this row. HR/admin see global
+    # + own-org. Anything else is 404.
+    if row.organization_id is not None and row.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="content not found")
+
+    # Org-private rows go through the existing global toggle, not this one.
+    if row.organization_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This row belongs to your organization. Use /toggle-disabled "
+                "instead, which globally toggles its disabled_at column."
+            ),
+        )
+
+    # Idempotent insert. Check first so duplicate-key doesn't generate a
+    # noisy IntegrityError in the logs.
+    existing = (
+        db.query(OrganizationContentDisable)
+        .filter(
+            OrganizationContentDisable.organization_id == org_id,
+            OrganizationContentDisable.content_type == content_type_label,
+            OrganizationContentDisable.content_id == content_id,
+        )
+        .first()
+    )
+    if existing is None:
+        db.add(OrganizationContentDisable(
+            organization_id=org_id,
+            content_type=content_type_label,
+            content_id=content_id,
+            disabled_by=p.user.id,
+        ))
+        db.commit()
+
+    return {"status": "disabled_for_org", "organization_id": org_id,
+            "content_type": content_type_label, "content_id": content_id}
+
+
+@router.post("/{content_type_url}/{content_id}/enable-for-my-org", status_code=200)
+def enable_content_for_my_org(
+    content_type_url: str,
+    content_id: int,
+    db: Session = Depends(get_db),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
+):
+    """
+    Un-hide a previously-hidden global content row for the caller's org.
+    Idempotent — calling on something that was never disabled is fine.
+    """
+    org_id = _require_org_role(p)
+    _model, content_type_label = _resolve_content_type(content_type_url)
+
+    deleted = (
+        db.query(OrganizationContentDisable)
+        .filter(
+            OrganizationContentDisable.organization_id == org_id,
+            OrganizationContentDisable.content_type == content_type_label,
+            OrganizationContentDisable.content_id == content_id,
+        )
+        .delete()
+    )
+    if deleted:
+        db.commit()
+    return {"status": "enabled_for_org", "organization_id": org_id,
+            "content_type": content_type_label, "content_id": content_id}
+
+
+@router.get("/disabled-for-my-org")
+def list_disabled_for_my_org(
+    db: Session = Depends(get_db),
+    p: Principal = Depends(require_principal(allow=("super", "admin", "hr"), strict=True)),
+):
+    """
+    The IDs of global content rows the caller's org has hidden, grouped
+    by content type. Frontend reads this once at page load to mark
+    matching rows in its manage-questions list with the off-toggle state.
+
+    Returns the four buckets even when empty so the frontend doesn't
+    need to special-case missing keys.
+    """
+    org_id = _require_org_role(p)
+
+    rows = (
+        db.query(OrganizationContentDisable)
+        .filter(OrganizationContentDisable.organization_id == org_id)
+        .all()
+    )
+
+    bucket: dict[str, list[int]] = {
+        "passage": [],
+        "question": [],
+        "writing_topic": [],
+        "speaking_topic": [],
+    }
+    for r in rows:
+        bucket.setdefault(r.content_type, []).append(r.content_id)
+    for key in bucket:
+        bucket[key].sort()
+    return bucket

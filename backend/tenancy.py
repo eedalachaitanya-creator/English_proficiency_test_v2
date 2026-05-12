@@ -299,3 +299,75 @@ def new_content_org_id(
         f"new_content_org_id: unknown role {principal.role!r}. "
         f"Update this function when adding new roles."
     )
+
+
+# ============================================================
+# Candidate content filtering (used at exam-assignment time)
+# ============================================================
+# Map of SQLAlchemy content model → string label stored in
+# organization_content_disable.content_type. Used by both the per-org
+# disable endpoints and the candidate-side filter so the same content
+# type vocabulary applies on both sides.
+_CANDIDATE_CONTENT_TYPES: dict[type, str] = {}
+
+
+def _register_candidate_content_types() -> None:
+    """Populated lazily on first call to avoid import cycles with models.py."""
+    if _CANDIDATE_CONTENT_TYPES:
+        return
+    from models import Passage, Question, SpeakingTopic, WritingTopic
+    _CANDIDATE_CONTENT_TYPES.update({
+        Passage: "passage",
+        Question: "question",
+        SpeakingTopic: "speaking_topic",
+        WritingTopic: "writing_topic",
+    })
+
+
+def tenant_scope_candidate_content(model, *, organization_id: int):
+    """
+    WHERE clause for a candidate loading content during their exam.
+
+    Includes:
+      - Org-private content for the invitation's org
+      - Global content (organization_id IS NULL)
+
+    Excludes:
+      - Global content the invitation's org has explicitly disabled via
+        organization_content_disable.
+
+    Usage:
+        rows = db.query(Question).filter(
+            tenant_scope_candidate_content(Question, organization_id=inv.organization_id)
+        ).all()
+
+    Raises ValueError if `model` is not one of the four candidate-facing
+    content tables — guard against silently filtering by the wrong type
+    (which would always return zero rows because the content_type label
+    wouldn't match anything in organization_content_disable).
+    """
+    from sqlalchemy import and_, or_, not_, exists
+    from models import OrganizationContentDisable
+
+    _register_candidate_content_types()
+    content_type = _CANDIDATE_CONTENT_TYPES.get(model)
+    if content_type is None:
+        raise ValueError(
+            f"tenant_scope_candidate_content: model {model!r} is not a "
+            f"candidate-facing content table. Expected one of "
+            f"{[m.__name__ for m in _CANDIDATE_CONTENT_TYPES]}."
+        )
+
+    return and_(
+        or_(
+            model.organization_id == organization_id,
+            model.organization_id.is_(None),
+        ),
+        not_(
+            exists().where(and_(
+                OrganizationContentDisable.organization_id == organization_id,
+                OrganizationContentDisable.content_type == content_type,
+                OrganizationContentDisable.content_id == model.id,
+            ))
+        ),
+    )

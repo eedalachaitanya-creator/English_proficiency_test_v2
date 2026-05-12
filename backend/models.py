@@ -609,3 +609,102 @@ class SupportedTimezone(Base):
     # Soft-delete flag. False = hidden from dropdown but still resolvable
     # for old invitations that already reference this iana_name.
     is_active = Column(Boolean, default=True, nullable=False)
+
+
+# ------------------------------------------------------------------
+# Audit log — append-only ledger of privileged actions
+# ------------------------------------------------------------------
+class AuditLog(Base):
+    """
+    One row per privileged action (super-admin org CRUD, super logins,
+    etc.). Rows are append-only — application code never updates or
+    deletes audit_log rows.
+
+    Denormalized columns (actor_*, target_organization_id) are
+    snapshotted at write time so the entry stays meaningful even after
+    rows it references are renamed, soft-deleted, or hard-deleted.
+    """
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True)
+
+    # Actor: who performed the action. All nullable so a future
+    # failed-login audit (no resolved user yet) can still write a row.
+    actor_id = Column(
+        Integer, ForeignKey("hr_admins.id"), nullable=True, index=True
+    )
+    actor_role = Column(String(10), nullable=True)
+    actor_email = Column(String(255), nullable=True)
+    actor_organization_id = Column(
+        Integer, ForeignKey("organizations.id"), nullable=True, index=True
+    )
+
+    # What happened. SCREAMING_SNAKE_CASE convention; see audit.py for the
+    # canonical list of action labels.
+    action = Column(String(64), nullable=False, index=True)
+
+    # Subject of the action. Both nullable for actions that don't have a
+    # subject (e.g. SUPER_LOGIN). target_type uses singular lowercase
+    # nouns matching the model name ('organization', 'hr_admin').
+    target_type = Column(String(40), nullable=True)
+    target_id = Column(Integer, nullable=True)
+    target_organization_id = Column(
+        Integer, ForeignKey("organizations.id"), nullable=True, index=True
+    )
+
+    # Action-specific structured details. Never store secrets here.
+    # For renames: {"before": "...", "after": "..."}.
+    payload = Column(JSON, nullable=True)
+
+    # Request fingerprint. Nullable so background jobs can write rows.
+    ip_address = Column(String(45), nullable=True)   # IPv6 max length
+    user_agent = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
+
+
+# ------------------------------------------------------------------
+# Per-org disable of global content
+# ------------------------------------------------------------------
+class OrganizationContentDisable(Base):
+    """
+    Per-organization override for global content. One row = "this org
+    has hidden this specific global passage/question/topic from its own
+    candidates".
+
+    Independent from the content table's own `disabled_at` column —
+    that one is a global flag, set by super (or the content author) to
+    disable a row for EVERY org. This table is the per-org layer above
+    that, set by HR/admin of one org to hide a row from their org only.
+
+    content_type values: 'passage', 'question', 'speaking_topic',
+    'writing_topic'. There is no FK on content_id because it points to
+    different tables depending on content_type — we validate the
+    target exists at the route layer when an HR triggers the toggle.
+
+    Composite PK (organization_id, content_type, content_id) prevents
+    duplicate rows for the same (org, content) pair — toggling
+    'disable' twice is idempotent.
+    """
+    __tablename__ = "organization_content_disable"
+    __table_args__ = (
+        CheckConstraint(
+            "content_type IN ('passage', 'question', 'speaking_topic', 'writing_topic')",
+            name="ck_org_content_disable_content_type",
+        ),
+    )
+
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id"),
+        primary_key=True,
+    )
+    content_type = Column(String(20), primary_key=True)
+    content_id = Column(Integer, primary_key=True)
+
+    disabled_at = Column(DateTime, default=_utcnow, nullable=False)
+    # Who flipped it. Nullable for migration safety and for back-fill
+    # scenarios. Always set in normal route-handler operation.
+    disabled_by = Column(
+        Integer, ForeignKey("hr_admins.id"), nullable=True
+    )

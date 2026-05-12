@@ -902,6 +902,38 @@ class OrganizationRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=150)
  
  
+class AuditLogEntry(BaseModel):
+    """One row of the audit_log table, surfaced via GET /api/super/audit-log.
+
+    All actor_* and target_* fields are optional because audit rows are
+    sometimes recorded without a full set (e.g. SUPER_LOGIN has no target,
+    a future failed-login entry might have no actor)."""
+    id: int
+    actor_id: Optional[int] = None
+    actor_role: Optional[str] = None
+    actor_email: Optional[str] = None
+    actor_organization_id: Optional[int] = None
+    action: str
+    target_type: Optional[str] = None
+    target_id: Optional[int] = None
+    target_organization_id: Optional[int] = None
+    payload: Optional[dict] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PaginatedAuditLog(BaseModel):
+    """Wrapper for /api/super/audit-log with offset-based pagination."""
+    items: list[AuditLogEntry]
+    total: int
+    page: int
+    page_size: int
+
+
 class OrganizationDetail(BaseModel):
     """GET /api/super/organizations/{id}. Org row plus light usage stats.
  

@@ -168,15 +168,15 @@ def _assign_content(inv: Invitation, db: Session):
         carries the org context.
     """
     # Tenancy filter for content rows. Same shape used 4 times below.
-    # Imported at the top of the function so the cost is bounded; SQLAlchemy
-    # builds the clause lazily so this is essentially free.
-    from sqlalchemy import or_
+    # Delegates to tenancy.tenant_scope_candidate_content, which also
+    # honors per-org disables in organization_content_disable (an Acme
+    # candidate never sees a question Acme's HR has hidden, even though
+    # the row exists globally).
+    from tenancy import tenant_scope_candidate_content
 
     def _org_filter(model):
-        """Returns the WHERE clause: row's org matches invitation's org OR row is global."""
-        return or_(
-            model.organization_id == inv.organization_id,
-            model.organization_id.is_(None),
+        return tenant_scope_candidate_content(
+            model, organization_id=inv.organization_id
         )
 
     # ---- Reading: passage + question set ----

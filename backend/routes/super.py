@@ -63,6 +63,17 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from audit import (
+    ACTION_ORG_CREATE,
+    ACTION_ORG_DELETE,
+    ACTION_ORG_DISABLE,
+    ACTION_ORG_ENABLE,
+    ACTION_ORG_RENAME,
+    ACTION_SUPER_LOGIN,
+    TARGET_HR_ADMIN,
+    TARGET_ORGANIZATION,
+    record_audit,
+)
 from auth import (
     Principal,
     require_principal,
@@ -72,7 +83,11 @@ from database import get_db
 from jwt_service import create_token_pair
 from models import HRAdmin, Invitation, Organization
 from schemas import (
+    AuditLogEntry,
     OrganizationOut,
+    PaginatedAuditLog,
+    PaginatedScoreSummary,
+    ScoreSummary,
     SuperLoginRequest,
     SuperLoginResponse,
     SuperMeResponse,
@@ -80,6 +95,7 @@ from schemas import (
     OrganizationRenameRequest,
     OrganizationDetail,
 )
+from models import AuditLog
 
 
 log = logging.getLogger("super")
@@ -247,6 +263,23 @@ def super_login(
             else None
         ),
     )
+
+    # Audit. No Principal yet (require_principal hasn't run), so pass
+    # actor_* fields explicitly. Audit only fires on successful auth —
+    # failed-credential paths above all raise before reaching here.
+    record_audit(
+        db,
+        principal=None,
+        action=ACTION_SUPER_LOGIN,
+        target_type=TARGET_HR_ADMIN,
+        target_id=user.id,
+        request=request,
+        actor_id=user.id,
+        actor_role="super",
+        actor_email=user.email,
+        actor_organization_id=None,
+    )
+    db.commit()
 
     return SuperLoginResponse(
         id=user.id,
@@ -441,6 +474,7 @@ def get_organization(
 )
 def create_organization(
     payload: OrganizationCreateRequest,
+    request: Request,
     p: Principal = Depends(require_principal(allow=("super",), strict=True)),
     db: Session = Depends(get_db),
 ):
@@ -479,7 +513,9 @@ def create_organization(
     )
     db.add(org)
     try:
-        db.commit()
+        # Flush to allocate org.id without committing — the audit row
+        # below references it, and both should land in one transaction.
+        db.flush()
     except IntegrityError:
         # Most likely: duplicate name (UNIQUE on organizations.name).
         # Slug collisions are pre-checked but a race could in principle
@@ -492,6 +528,17 @@ def create_organization(
                 "Pick a different name."
             ),
         )
+    record_audit(
+        db,
+        principal=p,
+        action=ACTION_ORG_CREATE,
+        target_type=TARGET_ORGANIZATION,
+        target_id=org.id,
+        target_organization_id=org.id,
+        payload={"name": org.name, "slug": org.slug},
+        request=request,
+    )
+    db.commit()
     db.refresh(org)
 
     log.info(
@@ -511,6 +558,7 @@ def create_organization(
 def rename_organization(
     org_id: int,
     payload: OrganizationRenameRequest,
+    request: Request,
     p: Principal = Depends(require_principal(allow=("super",), strict=True)),
     db: Session = Depends(get_db),
 ):
@@ -542,18 +590,31 @@ def rename_organization(
         )
 
     if new_name == org.name:
-        # No-op — return the row as-is. Idempotent.
+        # No-op — return the row as-is. Idempotent. No audit row written
+        # because no state actually changed.
         return _org_to_out(org)
 
+    before = org.name
     org.name = new_name
     try:
-        db.commit()
+        db.flush()
     except IntegrityError:
         db.rollback()
         raise HTTPException(
             status_code=409,
             detail="Another organization already has this name.",
         )
+    record_audit(
+        db,
+        principal=p,
+        action=ACTION_ORG_RENAME,
+        target_type=TARGET_ORGANIZATION,
+        target_id=org.id,
+        target_organization_id=org.id,
+        payload={"before": before, "after": new_name},
+        request=request,
+    )
+    db.commit()
     db.refresh(org)
 
     log.info(
@@ -572,6 +633,7 @@ def rename_organization(
 )
 def disable_organization(
     org_id: int,
+    request: Request,
     p: Principal = Depends(require_principal(allow=("super",), strict=True)),
     db: Session = Depends(get_db),
 ):
@@ -601,13 +663,22 @@ def disable_organization(
 
     if org.disabled_at is None:
         org.disabled_at = _utcnow_naive()
+        record_audit(
+            db,
+            principal=p,
+            action=ACTION_ORG_DISABLE,
+            target_type=TARGET_ORGANIZATION,
+            target_id=org.id,
+            target_organization_id=org.id,
+            request=request,
+        )
         db.commit()
         db.refresh(org)
         log.info(
             "[super] org disabled id=%s name=%r by user_id=%s",
             org.id, org.name, p.user.id,
         )
-    # else: already disabled — no-op, fall through to return current state
+    # else: already disabled — no-op, no audit row (mirroring rename).
 
     return _org_to_out(org)
 
@@ -621,6 +692,7 @@ def disable_organization(
 )
 def enable_organization(
     org_id: int,
+    request: Request,
     p: Principal = Depends(require_principal(allow=("super",), strict=True)),
     db: Session = Depends(get_db),
 ):
@@ -645,13 +717,22 @@ def enable_organization(
 
     if org.disabled_at is not None:
         org.disabled_at = None
+        record_audit(
+            db,
+            principal=p,
+            action=ACTION_ORG_ENABLE,
+            target_type=TARGET_ORGANIZATION,
+            target_id=org.id,
+            target_organization_id=org.id,
+            request=request,
+        )
         db.commit()
         db.refresh(org)
         log.info(
             "[super] org enabled id=%s name=%r by user_id=%s",
             org.id, org.name, p.user.id,
         )
-    # else: already active — no-op
+    # else: already active — no-op, no audit row.
 
     return _org_to_out(org)
 
@@ -665,6 +746,7 @@ def enable_organization(
 )
 def delete_organization(
     org_id: int,
+    request: Request,
     p: Principal = Depends(require_principal(allow=("super",), strict=True)),
     db: Session = Depends(get_db),
 ):
@@ -720,6 +802,16 @@ def delete_organization(
         )
 
     org.deleted_at = _utcnow_naive()
+    record_audit(
+        db,
+        principal=p,
+        action=ACTION_ORG_DELETE,
+        target_type=TARGET_ORGANIZATION,
+        target_id=org.id,
+        target_organization_id=org.id,
+        payload={"name": org.name, "slug": org.slug},
+        request=request,
+    )
     db.commit()
 
     log.info(
@@ -728,3 +820,145 @@ def delete_organization(
     )
     # 204 — empty response body
     return None
+
+
+# ======================================================================
+# Cross-org READ endpoints — surfaced via the super-admin frontend portal
+# ======================================================================
+
+# ------------------------------------------------------------------
+# GET /organizations/{org_id}/candidates — paginated invitations for one org
+# ------------------------------------------------------------------
+@router.get(
+    "/organizations/{org_id}/candidates",
+    response_model=PaginatedScoreSummary,
+)
+def list_org_candidates(
+    org_id: int,
+    page: int = 1,
+    page_size: int = 25,
+    p: Principal = Depends(require_principal(allow=("super",), strict=True)),
+    db: Session = Depends(get_db),
+):
+    """
+    All invitations belonging to one organization, newest-first, paginated.
+
+    Same response shape as /api/admin/hrs/{hr_id}/candidates so the
+    frontend can reuse the candidate-list table component.
+
+    404 for non-existent OR soft-deleted org — same generic message
+    either way, so we don't leak "this id was once valid".
+    """
+    page_size = max(1, min(page_size, 100))
+    page = max(1, page)
+
+    org = (
+        db.query(Organization)
+        .filter(
+            Organization.id == org_id,
+            Organization.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+
+    total = (
+        db.query(Invitation)
+        .filter(Invitation.organization_id == org_id)
+        .count()
+    )
+
+    invitations = (
+        db.query(Invitation)
+        .filter(Invitation.organization_id == org_id)
+        .order_by(Invitation.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items: list[ScoreSummary] = []
+    for inv in invitations:
+        s = inv.score  # None if Day-2 scoring hasn't run yet
+        items.append(
+            ScoreSummary(
+                invitation_id=inv.id,
+                candidate_name=inv.candidate_name,
+                candidate_email=inv.candidate_email,
+                difficulty=inv.difficulty,
+                submitted_at=inv.submitted_at,
+                reading_score=s.reading_score if s else None,
+                writing_score=s.writing_score if s else None,
+                speaking_score=s.speaking_score if s else None,
+                total_score=s.total_score if s else None,
+                rating=s.rating if s else None,
+                include_reading=inv.include_reading,
+                include_writing=inv.include_writing,
+                include_speaking=inv.include_speaking,
+                email_status=inv.email_status,
+                email_error=inv.email_error if inv.email_status == "failed" else None,
+                expires_at=inv.expires_at,
+            )
+        )
+
+    return PaginatedScoreSummary(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+# ------------------------------------------------------------------
+# GET /audit-log — paginated, filterable
+# ------------------------------------------------------------------
+@router.get(
+    "/audit-log",
+    response_model=PaginatedAuditLog,
+)
+def list_audit_log(
+    action: Optional[str] = None,
+    target_organization_id: Optional[int] = None,
+    actor_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    p: Principal = Depends(require_principal(allow=("super",), strict=True)),
+    db: Session = Depends(get_db),
+):
+    """
+    Paginated audit log for the super-admin portal.
+
+    Filters (all optional, combinable):
+      action                  — exact label match, e.g. "ORG_CREATE"
+      target_organization_id  — every entry touching a given org
+      actor_id                — every entry initiated by a given user
+
+    Ordered newest-first by id (which mirrors created_at since both
+    increase monotonically per row).
+    """
+    page_size = max(1, min(page_size, 200))
+    page = max(1, page)
+
+    q = db.query(AuditLog)
+    if action is not None:
+        q = q.filter(AuditLog.action == action)
+    if target_organization_id is not None:
+        q = q.filter(AuditLog.target_organization_id == target_organization_id)
+    if actor_id is not None:
+        q = q.filter(AuditLog.actor_id == actor_id)
+
+    total = q.count()
+    rows = (
+        q.order_by(AuditLog.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return PaginatedAuditLog(
+        items=[AuditLogEntry.model_validate(r) for r in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
