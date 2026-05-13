@@ -708,13 +708,19 @@ class ScoreDetail(BaseModel):
 
 class PassageOut(BaseModel):
     """HR view of a passage. Includes everything a candidate-facing
-    PassagePublic would NOT — difficulty, topic, word_count."""
+    PassagePublic would NOT — difficulty, topic, word_count.
+
+    organization_id is exposed so the frontend can distinguish global
+    rows (NULL = visible to every org) from org-private rows. The
+    per-org disable toggle on the admin/HR UI only applies to global
+    rows; org-private rows use the existing /toggle-disabled endpoint."""
     id: int
     title: str
     body: str
     difficulty: str
     topic: Optional[str] = None
     word_count: int
+    organization_id: Optional[int] = None
     disabled_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
 
@@ -747,6 +753,7 @@ class QuestionOut(BaseModel):
     options: list[str]
     correct_answer: int
     passage_id: Optional[int] = None
+    organization_id: Optional[int] = None
     disabled_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
 
@@ -784,6 +791,7 @@ class WritingTopicOut(BaseModel):
     min_words: int
     max_words: int
     category: Optional[str] = None
+    organization_id: Optional[int] = None
     disabled_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
 
@@ -813,6 +821,7 @@ class SpeakingTopicOut(BaseModel):
     prompt_text: str
     difficulty: str
     category: Optional[str] = None
+    organization_id: Optional[int] = None
     disabled_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
 
